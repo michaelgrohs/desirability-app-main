@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<log xes.version="1849-2016" xes.features="nested-attributes" xmlns="http://www.xes-standard.org/">
+	<trace>
+		<event>
+			<string key="concept:name" value="Receive Application" />
+		</event>
+		<event>
+			<string key="concept:name" value="Check Personal Details" />
+		</event>
+		<event>
+			<string key="concept:name" value="Create Credit Report" />
+		</event>
+		<event>
+			<string key="concept:name" value="Decide on Application" />
+		</event>
+		<event>
+			<string key="concept:name" value="Calculate Interest" />
+		</event>
+		<event>
+			<string key="concept:name" value="Send Rejection" />
+		</event>
+	</trace>
+	<trace>
+		<event>
+			<string key="concept:name" value="Receive Application" />
+		</event>
+		<event>
+			<string key="concept:name" value="Create Credit Report" />
+		</event>
+		<event>
+			<string key="concept:name" value="Check Personal Details" />
+		</event>
+		<event>
+			<string key="concept:name" value="Calculate Interest" />
+		</event>
+		<event>
+			<string key="concept:name" value="Decide on Application" />
+		</event>
+	</trace>
+</log>
