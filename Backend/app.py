@@ -20,7 +20,8 @@ from process_mining.conformance_alignments import (
     get_requested_amount_vs_conformance,
     get_conformance_by_resource,
     get_trace_sequences,
-    get_all_activities_from_bpmn
+    get_all_activities_from_bpmn,
+    build_trace_deviation_matrix_df
 )
 
 from process_mining.activity_deviations import get_activity_deviations
@@ -28,7 +29,7 @@ from pm4py.objects.log.importer.xes import importer as xes_importer
 
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True)
 
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -44,13 +45,18 @@ last_uploaded_data = {
     "xes_path": None,
     "bpmn_model": None,
     "xes_log": None,
-    "alignments": None
+    "alignments": None,
+    "deviation_matrix": None,
+    "deviation_labels": None,
+    "impact_matrix": None
 }
 
 def reset_cache():
     last_uploaded_data["bpmn_model"] = None
     last_uploaded_data["xes_log"] = None
     last_uploaded_data["alignments"] = None
+    last_uploaded_data["deviation_matrix"] = None
+    last_uploaded_data["impact_matrix"] = None
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -59,18 +65,35 @@ def health_check():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    if 'bpmn' not in request.files or 'xes' not in request.files:
-        return jsonify({"error": "Both BPMN and XES files are required"}), 400
+    print("\n==== UPLOAD CALLED ====")
+    print("Request files:", request.files)
+    print("Request form:", request.form)
 
     # Save files
     bpmn_file = request.files['bpmn']
     xes_file = request.files['xes']
 
-    bpmn_path = os.path.join(UPLOAD_FOLDER, bpmn_file.filename)
-    xes_path = os.path.join(UPLOAD_FOLDER, xes_file.filename)
+    print("BPMN file:", bpmn_file)
+    print("XES file:", xes_file)
 
-    bpmn_file.save(bpmn_path)
+    if not bpmn_file or not xes_file:
+        return jsonify({"error": "Missing BPMN or XES file"}), 400
+
+    if xes_file.filename == '':
+        return jsonify({"error": "Empty XES filename"}), 400
+
+    upload_folder = "uploads"
+    os.makedirs(upload_folder, exist_ok=True)
+
+    xes_path = os.path.join(upload_folder, xes_file.filename)
+    bpmn_path = os.path.join(upload_folder, bpmn_file.filename)
+
     xes_file.save(xes_path)
+    bpmn_file.save(bpmn_path)
+
+    print("Saved XES to:", xes_path)
+    print("Saved BPMN to:", bpmn_path)
+
 
     # Store paths
     last_uploaded_data['bpmn_path'] = bpmn_path
@@ -82,9 +105,10 @@ def upload_files():
 
     # Parse XES or CSV
     filename, file_extension = os.path.splitext(xes_path)
-
+    print(file_extension)
     if file_extension == '.csv':
-        log_csv = pd.read_csv(xes_path, sep=None, encoding='utf-8-sig')
+        log_csv = pd.read_csv(xes_path, encoding='utf-8-sig')
+        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], format='mixed', utc=True)
         xes_log = log_converter.apply(log_csv)
     elif file_extension == '.xes':
         xes_log = xes_importer.apply(xes_path)
@@ -103,6 +127,10 @@ def upload_files():
         "alignment_count": len(alignments)
     })
 
+
+def get_cached_impact_matrix():
+    return last_uploaded_data.get("impact_matrix")
+
 def get_cached_alignments():
     if last_uploaded_data['alignments'] is None:
 
@@ -117,6 +145,41 @@ def get_cached_xes_log():
     if last_uploaded_data['xes_log'] is None and last_uploaded_data['xes_path']:
         last_uploaded_data['xes_log'] = xes_importer.apply(last_uploaded_data['xes_path'])
     return last_uploaded_data['xes_log']
+
+def get_cached_deviation_matrix():
+    if last_uploaded_data["deviation_matrix"] is None:
+
+        print("⚙️ Building deviation matrix...")
+
+        log = get_cached_xes_log()
+        aligned_traces = get_cached_alignments()
+
+        df, labels = build_trace_deviation_matrix_df(log, aligned_traces)
+
+        last_uploaded_data["deviation_matrix"] = df
+        last_uploaded_data["deviation_labels"] = labels
+
+        print("✅ Deviation matrix cached.")
+        print("Shape:", df.shape)
+
+    return last_uploaded_data["deviation_matrix"]
+
+
+@app.route("/api/preview-matrix", methods=["GET"])
+def api_preview_matrix():
+
+    df = get_cached_deviation_matrix()
+
+    # return small sample to avoid huge payload
+    sample_df = df.head(500)
+    #sample_df = df.copy()
+
+    return jsonify({
+        "columns": list(sample_df.columns),
+        "rows": sample_df.to_dict(orient="records")
+    })
+
+
 
 @app.route('/api/deviation-overview', methods=['GET'])
 def deviation_overview():
@@ -151,6 +214,80 @@ def deviation_overview():
         ]
     })
 
+
+@app.route("/api/deviation-matrix", methods=["GET"])
+def api_deviation_matrix_preview(preview=False):
+
+    df = get_cached_deviation_matrix()
+
+    if preview:
+        preview_size = 50  # only return first 50 rows
+        preview_df = df.head(preview_size)
+    else:
+        preview_df = df.copy()
+
+    return jsonify({
+        "columns": list(preview_df.columns),
+        "rows": preview_df.to_dict(orient="records"),
+        "total_rows": df.shape[0],
+        "total_columns": df.shape[1]
+    })
+
+
+from flask import request, jsonify
+import pandas as pd
+
+@app.route("/api/configure-dimensions", methods=["POST"])
+def configure_dimensions():
+
+    data = request.json
+    dimension_configs = data.get("dimensions", [])
+
+    # ✅ get the already cached trace x deviation matrix
+    df = get_cached_deviation_matrix().copy()
+
+    for dim in dimension_configs:
+
+        dimension = dim["dimension"]
+        comp_type = dim["computationType"]
+        config = dim["config"]
+
+        if comp_type == "existing":
+            column = config["column"]
+
+            if column not in df.columns:
+                return jsonify({"error": f"Column '{column}' not found"}), 400
+
+            df[dimension] = df[column]
+
+        elif comp_type == "formula":
+            base = config["baseColumn"]
+
+            if base not in df.columns:
+                return jsonify({"error": f"Base column '{base}' not found"}), 400
+
+            subtract = config.get("subtractConstant", 0)
+            multiplier = config.get("multiplier", 1)
+
+            df[dimension] = (df[base] - subtract) * multiplier
+
+        elif comp_type == "rule":
+            column = config["column"]
+
+            if column not in df.columns:
+                return jsonify({"error": f"Column '{column}' not found"}), 400
+
+            value = config["value"]
+
+            df[dimension] = (df[column] == value).astype(int)
+
+    # ✅ store result inside your cache dict instead of global variable
+    last_uploaded_data["impact_matrix"] = df
+
+    return jsonify({
+        "status": "success",
+        "columns": list(df.columns)
+    })
 
 
 @app.route('/api/save-timing', methods=['POST'])
@@ -314,4 +451,6 @@ def preload_file(filename):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    print("🚀 Flask backend running at: http://localhost:1904")
+    app.run(host="0.0.0.0", port=1904, debug=True)
+    reset_cache()

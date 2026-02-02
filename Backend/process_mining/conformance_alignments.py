@@ -118,6 +118,96 @@ def extract_desired_outcomes_from_bpmn(bpmn_path,
         ends = get_visible_end_activities(net, fm)
         return list(ends)
 
+from pm4py import get_trace_attributes
+
+def build_trace_deviation_matrix_df(log, aligned_traces):
+    deviations = []
+    deviation_labels = {}  # <-- NEW
+
+    for i, trace in enumerate(log):
+        alignment = aligned_traces[i]["alignment"]
+
+        for move in alignment:
+            log_move, model_move = move
+
+            if model_move is None or log_move == model_move:
+                continue
+
+            move_str = str(move)
+
+            if move_str not in deviations:
+                deviations.append(move_str)
+
+    # -----------------------------------------
+    # Create readable names
+    # -----------------------------------------
+    for idx, dev in enumerate(deviations):
+        log_move, model_move = eval(dev)
+
+        if log_move == ">>":
+            label = f"(Skip {model_move})"
+        elif model_move == ">>":
+            label = f"(Insert {log_move})"
+
+        deviation_labels[dev] = label
+
+    trace_attributes = get_trace_attributes(log)
+
+    rows = []
+
+    # -------------------------------------------------
+    # STEP 2: Build rows
+    # -------------------------------------------------
+    for i, trace in enumerate(log):
+
+        row = {}
+
+        # Trace ID
+        row["trace_id"] = trace.attributes.get("concept:name", f"trace_{i}")
+
+        # Trace attributes
+        for attr in trace_attributes:
+            row[attr] = trace.attributes.get(attr, None)
+
+        # Trace duration
+        if len(trace) > 0:
+            start = trace[0]["time:timestamp"]
+            end = trace[-1]["time:timestamp"]
+            row["trace_duration_seconds"] = (end - start).total_seconds()
+        else:
+            row["trace_duration_seconds"] = 0
+
+        # Initialize deviation columns
+        for dev in deviations:
+            row[deviation_labels[dev]] = 0
+
+        # Mark deviations
+        alignment = aligned_traces[i]["alignment"]
+
+        for move in alignment:
+            log_move, model_move = move
+
+            if model_move is None or log_move == model_move:
+                continue
+
+            row[deviation_labels[str(move)]] = 1
+
+        rows.append(row)
+    # Base columns in order: trace_id, trace attributes, duration
+    base_columns = ["trace_id"] + trace_attributes + ["trace_duration_seconds"]
+
+    # Deviation columns in the order they appeared
+    deviation_columns = [deviation_labels[dev] for dev in deviations]
+
+    # Combine all
+    all_columns = base_columns + deviation_columns
+    print(all_columns)
+
+    df = pd.DataFrame(rows, columns=all_columns)
+
+    return df, deviation_labels
+
+
 def get_outcome_distribution(bpmn_path, log, aligned_traces,
                              matching_mode=None, selected_activities=None):
     """
