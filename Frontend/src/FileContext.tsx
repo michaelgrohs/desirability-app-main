@@ -20,7 +20,8 @@ interface OutcomeBin {
 }
 
 interface DeviationSelection {
-  activity: string;
+  column: string;   // exact matrix column name
+  label: string;    // activity name without prefix
   type: 'skip' | 'insertion';
 }
 

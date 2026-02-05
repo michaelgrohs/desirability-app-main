@@ -152,20 +152,29 @@ const DeviationOverview: React.FC = () => {
   // Toggle Selection (UNCHANGED)
   // =========================
   const handleToggle = (activity: string, type: 'skip' | 'insertion') => {
-    setSelectedDeviations((prev: SelectedDeviation[]) => {
-      const exists = prev.find(
-        (d) => d.activity === activity && d.type === type
-      );
+      const column =
+        type === 'skip'
+          ? `(Skip ${activity})`
+          : `(Insert ${activity})`;
 
-      if (exists) {
-        return prev.filter(
-          (d) => !(d.activity === activity && d.type === type)
-        );
-      }
+      setSelectedDeviations((prev) => {
+        const exists = prev.find((d) => d.column === column);
 
-      return [...prev, { activity, type }];
-    });
-  };
+        if (exists) {
+          return prev.filter((d) => d.column !== column);
+        }
+
+        return [
+          ...prev,
+          {
+            column,
+            label: activity,
+            type
+          }
+        ];
+      });
+    };
+
 
   const renderList = (
     items: DeviationItem[],
@@ -187,8 +196,12 @@ const DeviationOverview: React.FC = () => {
           <Box display="flex" alignItems="center">
             <Checkbox
               checked={selectedDeviations.some(
-                (d) => d.activity === item.activity && d.type === type
-              )}
+                  (d) =>
+                    d.column ===
+                    (type === 'skip'
+                      ? `(Skip ${item.activity})`
+                      : `(Insert ${item.activity})`)
+                )}
               onChange={() => handleToggle(item.activity, type)}
             />
             <Typography>{item.activity}</Typography>

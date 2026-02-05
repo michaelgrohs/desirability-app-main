@@ -71,6 +71,6 @@
   },
   "options": {
     "allowedHosts": ["localhost", ".localhost"],
-    "proxy": "https://localhost:3000/"
+    "proxy": "https://localhost:1904/"
   }
 }

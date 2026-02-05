@@ -6,6 +6,7 @@ import ViewBPMN from "./ViewBPMN";
 import SelectDimensions from "./SelectDimensions";
 import DeviationOverview from "./DeviationOverview";
 import CausalResults from "./CausalResults";
+import CriticalityResults from "./CriticalityResults";
 import ViolationGuidelines from "./ViolationGuidelines";
 import ActivityStats from "./ActivityStats"; // Import the new ActivityStats page
 
@@ -22,6 +23,7 @@ const App: React.FC = () => {
           <Route path="/violation-guidelines" element={<ViolationGuidelines />} />
             <Route path="/select-dimensions" element={<SelectDimensions />} />
             <Route path="/causal-results" element={<CausalResults />} />
+            <Route path="/criticality-results" element={<CriticalityResults />} />
         </Routes>
       </Router>
     </FileProvider>

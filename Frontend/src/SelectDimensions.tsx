@@ -201,12 +201,14 @@ const SelectDimensions: React.FC = () => {
                 <Select
                   fullWidth
                   sx={{ mt: 2 }}
+                  value={configs[dim]?.config?.column || ""}
                   onChange={(e) =>
                     updateConfig(dim, {
                       config: { column: e.target.value }
                     })
                   }
                 >
+
                   {matrixColumns.map(col => (
                     <MenuItem key={col} value={col}>
                       {col}
@@ -325,7 +327,7 @@ const SelectDimensions: React.FC = () => {
 
         <Button
           variant="contained"
-          disabled={selectedDimensions.length === 0}
+          disabled={selectedDimensions.length === 0 || isComputing}
           onClick={handleSubmit}
         >
           Continue

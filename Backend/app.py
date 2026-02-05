@@ -114,7 +114,7 @@ def upload_files():
     print(file_extension)
     if file_extension == '.csv':
         log_csv = pd.read_csv(xes_path, encoding='utf-8-sig')
-        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], format='mixed', utc=True)
+        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], utc=True)
         xes_log = log_converter.apply(log_csv)
     elif file_extension == '.xes':
         xes_log = xes_importer.apply(xes_path)
@@ -327,6 +327,11 @@ def compute_causal_effects():
 
     df = last_uploaded_data["impact_matrix"].copy()
 
+    print("Received deviations:", selected_deviations)
+    print("Received dimensions:", selected_dimensions)
+    print("Impact matrix shape:", df.shape)
+    print("Columns:", df.columns.tolist())
+
     results = []
 
     for dim in selected_dimensions:
@@ -356,13 +361,15 @@ def compute_causal_effects():
                     test_significance=True
                 )
 
+                significance = estimate.test_stat_significance()
+
                 results.append({
                     "deviation": dev,
                     "dimension": dim,
                     "ate": float(estimate.value),
-                    "p_value": float(estimate.test_stat_significance()["p_value"])
-                    if estimate.test_stat_significance() else None
+                    "p_value": float(significance["p_value"]) if significance else None
                 })
+
 
             except Exception as e:
                 results.append({
@@ -372,6 +379,11 @@ def compute_causal_effects():
                 })
 
     last_uploaded_data["causal_results"] = results
+    if not results:
+        return jsonify({
+            "error": "No valid deviation-dimension combinations found",
+            "available_columns": df.columns.tolist()
+        }), 400
 
     return jsonify({
         "results": results
