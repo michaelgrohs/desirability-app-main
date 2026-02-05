@@ -58,7 +58,7 @@ const CausalResults: React.FC = () => {
   return (
     <Box sx={{ width: "90vw", maxWidth: 1000, margin: "0 auto", mt: 4 }}>
       <Typography variant="h5" gutterBottom>
-        Average Treatment Effects (ATE) srhf
+        Average Treatment Effects (ATE)
       </Typography>
 
       <Divider sx={{ my: 3 }} />
