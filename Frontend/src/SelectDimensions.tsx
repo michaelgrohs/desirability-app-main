@@ -16,11 +16,14 @@ import {
   Button,
   Divider
 } from "@mui/material";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useEffect } from 'react';
-const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:5000";
+import { useBottomNav } from './BottomNavContext';
+import { useFileContext } from './FileContext';
+const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:1904";
 
 type Dimension = "time" | "costs" | "quality" | "outcome" | "compliance";
+
 type ComputationType = "existing" | "formula" | "rule";
 
 interface DimensionConfig {
@@ -39,8 +42,8 @@ const availableDimensions: Dimension[] = [
 
 const SelectDimensions: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
-    const selectedDeviations = location.state?.selectedDeviations || [];
+  const { setContinue } = useBottomNav();
+  const { selectedDeviations } = useFileContext();
 
 
   const [selectedDimensions, setSelectedDimensions] = useState<Dimension[]>([]);
@@ -51,6 +54,7 @@ const SelectDimensions: React.FC = () => {
     const [matrixLoading, setMatrixLoading] = useState(true);
 
     useEffect(() => {
+      setMatrixLoading(true);
       fetch(`${API_URL}/api/current-impact-matrix`)
         .then(res => res.json())
         .then(data => {
@@ -58,7 +62,7 @@ const SelectDimensions: React.FC = () => {
           setMatrixRows(data.rows);
           setMatrixLoading(false);
         });
-    }, []);
+    }, [selectedDeviations, selectedDimensions]);
 
   // ---------------------------
   // Toggle dimension selection
@@ -146,8 +150,16 @@ const SelectDimensions: React.FC = () => {
         selectedDeviations
       }
     });
-
   };
+
+  useEffect(() => {
+    setContinue({
+      label: "Continue",
+      onClick: handleSubmit,
+      disabled: selectedDimensions.length === 0 || isComputing,
+    });
+    return () => setContinue(null);
+  }, [selectedDimensions, selectedDeviations, isComputing, setContinue]);
 
   return (
     <Box sx={{ width: "90vw", maxWidth: 900, margin: "0 auto", mt: 5 }}>
@@ -220,61 +232,54 @@ const SelectDimensions: React.FC = () => {
             {/* FORMULA */}
             {configs[dim]?.computationType === "formula" && (
               <>
-                <Select
+                <TextField
                   fullWidth
                   sx={{ mt: 2 }}
-                  value={configs[dim]?.config?.baseColumn || ""}
+                  label="Formula Expression"
+                  placeholder='Example: (duration - planned_duration) / 60'
+                  value={configs[dim]?.config?.expression || ""}
                   onChange={(e) =>
                     updateConfig(dim, {
                       config: {
-                        ...configs[dim]?.config,
-                        baseColumn: e.target.value
+                        expression: e.target.value
                       }
                     })
                   }
-                >
-                  {matrixColumns.map(col => (
-                    <MenuItem key={col} value={col}>
+                  multiline
+                  minRows={2}
+                />
+
+                <Typography variant="caption" sx={{ mt: 1, display: "block" }}>
+                  Available columns:
+                </Typography>
+
+                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                  {matrixColumns.map((col) => (
+                    <Button
+                      key={col}
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        const current = configs[dim]?.config?.expression || "";
+                        updateConfig(dim, {
+                          config: {
+                            expression: current + col
+                          }
+                        });
+                      }}
+                    >
                       {col}
-                    </MenuItem>
+                    </Button>
                   ))}
-                </Select>
-
-                <TextField
-                  fullWidth
-                  sx={{ mt: 2 }}
-                  label="Subtract Constant"
-                  type="number"
-                  onChange={(e) =>
-                    updateConfig(dim, {
-                      config: {
-                        ...configs[dim]?.config,
-                        subtractConstant: Number(e.target.value)
-                      }
-                    })
-                  }
-                />
-
-                <TextField
-                  fullWidth
-                  sx={{ mt: 2 }}
-                  label="Multiplier"
-                  type="number"
-                  onChange={(e) =>
-                    updateConfig(dim, {
-                      config: {
-                        ...configs[dim]?.config,
-                        multiplier: Number(e.target.value)
-                      }
-                    })
-                  }
-                />
+                </Box>
               </>
             )}
+
 
             {/* RULE */}
             {configs[dim]?.computationType === "rule" && (
               <>
+                {/* Column Selection */}
                 <Select
                   fullWidth
                   sx={{ mt: 2 }}
@@ -288,17 +293,44 @@ const SelectDimensions: React.FC = () => {
                     })
                   }
                 >
-                  {matrixColumns.map(col => (
+                  {matrixColumns.map((col) => (
                     <MenuItem key={col} value={col}>
                       {col}
                     </MenuItem>
                   ))}
                 </Select>
 
+                {/* Operator Selection */}
+                <Select
+                  fullWidth
+                  sx={{ mt: 2 }}
+                  value={configs[dim]?.config?.operator || ""}
+                  onChange={(e) =>
+                    updateConfig(dim, {
+                      config: {
+                        ...configs[dim]?.config,
+                        operator: e.target.value
+                      }
+                    })
+                  }
+                >
+                  <MenuItem value="equals">Equals</MenuItem>
+                  <MenuItem value="not_equals">Not Equals</MenuItem>
+                  <MenuItem value="contains">Contains</MenuItem>
+                  <MenuItem value="starts_with">Starts With</MenuItem>
+                  <MenuItem value="ends_with">Ends With</MenuItem>
+                  <MenuItem value="greater">Greater Than</MenuItem>
+                  <MenuItem value="less">Less Than</MenuItem>
+                  <MenuItem value="greater_equal">Greater or Equal</MenuItem>
+                  <MenuItem value="less_equal">Less or Equal</MenuItem>
+                </Select>
+
+                {/* Value Input */}
                 <TextField
                   fullWidth
                   sx={{ mt: 2 }}
-                  label="Equals Value"
+                  label="Value"
+                  value={configs[dim]?.config?.value || ""}
                   onChange={(e) =>
                     updateConfig(dim, {
                       config: {
@@ -311,11 +343,12 @@ const SelectDimensions: React.FC = () => {
               </>
             )}
 
+
           </CardContent>
         </Card>
       ))}
 
-      <Box display="flex" justifyContent="space-between" mt={4}>
+      <Box display="flex" justifyContent="flex-start" mt={4}>
         <Button
           variant="contained"
           color="primary"
@@ -323,14 +356,6 @@ const SelectDimensions: React.FC = () => {
           onClick={handleComputeDimensions}
         >
           {isComputing ? "Computing..." : "Compute Dimensions"}
-        </Button>
-
-        <Button
-          variant="contained"
-          disabled={selectedDimensions.length === 0 || isComputing}
-          onClick={handleSubmit}
-        >
-          Continue
         </Button>
       </Box>
 
@@ -372,7 +397,15 @@ const SelectDimensions: React.FC = () => {
                         textAlign: "center"
                       }}
                     >
-                      {row[col]}
+                      {Array.isArray(row[col]) ? (
+                        <ul style={{ margin: 0, paddingLeft: "1em", textAlign: "left" }}>
+                          {row[col].map((act: string, idx: number) => (
+                            <li key={idx}>{act}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        row[col]
+                      )}
                     </td>
                   ))}
                 </tr>

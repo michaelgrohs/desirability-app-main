@@ -1,9 +1,10 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Slider, Box, Typography, TextField,
   Button, Tooltip, IconButton, Select, MenuItem
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
+import { useBottomNav } from './BottomNavContext';
 import {
   Chart as ChartJS, CategoryScale, LinearScale, BarElement, PointElement,
   Title, Tooltip as ChartTooltip, Legend
@@ -28,6 +29,12 @@ const ViolationGuidelines: React.FC = () => {
   const [selectedAttribute, setSelectedAttribute] = useState<string>('event:org:resource');
   const chartRef = useRef<any>(null);
   const navigate = useNavigate();
+  const { setContinue } = useBottomNav();
+
+  useEffect(() => {
+    setContinue({ label: "Continue", onClick: () => navigate('/conformance-outcome') });
+    return () => setContinue(null);
+  }, [navigate, setContinue]);
 
   const { attributeConformance, amountConformanceData } = useFileContext();
   const attributeOptions = Object.keys(attributeConformance || {});
@@ -298,46 +305,6 @@ const scatterOptions: ChartOptions<'scatter'> = {
 </Box>
 
 
-<>
-  <Button
-    variant="contained"
-    color="primary"
-    sx={{
-      position: 'absolute',
-      bottom: '20px',
-      left: '20px',
-      fontSize: '1.5rem',
-      minWidth: '50px',
-      height: '50px',
-      fontWeight: 'bold',
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-    }}
-    onClick={() => navigate('/heatmap-aggr')}
-  >
-    ←
-  </Button>
-  <Button
-    variant="contained"
-    color="primary"
-    sx={{
-      position: 'absolute',
-      bottom: '20px',
-      right: '20px',
-      fontSize: '1.5rem',
-      minWidth: '50px',
-      height: '50px',
-      fontWeight: 'bold',
-      display: 'flex',
-      justifyContent: 'center',
-      alignItems: 'center',
-    }}
-    onClick={() => navigate('/conformance-outcome')}
-  >
-    →
-  </Button>
-</>
 
     </Box>
   );

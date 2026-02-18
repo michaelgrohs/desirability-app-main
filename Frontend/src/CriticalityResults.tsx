@@ -13,6 +13,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { useBottomNav } from "./BottomNavContext";
 
 interface CausalResult {
   deviation: string;
@@ -95,6 +96,12 @@ const criticalityWeight = (label: CriticalityLevel | null) => {
 const CriticalityResults: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { setContinue } = useBottomNav();
+
+  React.useEffect(() => {
+    setContinue({ label: "Back to Start", onClick: () => navigate("/") });
+    return () => setContinue(null);
+  }, [navigate, setContinue]);
 
   const results: CausalResult[] = location.state?.results || [];
   const criticalityMap: CriticalityMap = location.state?.criticalityMap || {};
@@ -215,10 +222,6 @@ const CriticalityResults: React.FC = () => {
     <Box sx={{ width: "90vw", maxWidth: 1100, margin: "0 auto", mt: 4 }}>
       <Box display="flex" justifyContent="space-between" mb={4}>
         <Typography variant="h5">Criticality Overview</Typography>
-
-        <Button variant="outlined" onClick={() => navigate("/")}>
-          Back to Start
-        </Button>
       </Box>
 
       <Box display="flex" gap={3} mb={3} alignItems="center" flexWrap="wrap">

@@ -2,22 +2,49 @@ import os
 import pandas as pd
 from pm4py.objects.conversion.log import converter as log_converter
 import pm4py
+from pm4py.objects.petri_net.obj import Marking
 import xml.etree.ElementTree as ET
 from pm4py.objects.log.importer.xes import importer as xes_importer
 from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
 from collections import defaultdict
 
 
-def calculate_alignments(bpmn_path: str, log):
-    if not os.path.exists(bpmn_path):
-        raise FileNotFoundError(f"BPMN file not found: {bpmn_path}")
+def calculate_alignments(model_path: str, log):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model file not found: {model_path}")
 
-    bpmn_model = pm4py.read_bpmn(bpmn_path)
-    net, initial_marking, final_marking = pm4py.convert.convert_to_petri_net(bpmn_model)
+    net, initial_marking, final_marking = read_model_as_petri_net(model_path)
 
     aligned_traces = alignments.apply_log(log, net, initial_marking, final_marking)
 
     return aligned_traces
+
+
+def _ensure_markings(net, im, fm):
+    """Generate initial/final markings from sink/source places if missing."""
+    if fm is None:
+        sink_places = [p for p in net.places if len(p.out_arcs) == 0]
+        fm = Marking()
+        for p in sink_places:
+            fm[p] = 1
+    if im is None:
+        source_places = [p for p in net.places if len(p.in_arcs) == 0]
+        im = Marking()
+        for p in source_places:
+            im[p] = 1
+    return im, fm
+
+
+def read_model_as_petri_net(model_path: str):
+    """Read a BPMN or PNML file and return (net, im, fm)."""
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext == '.pnml':
+        net, im, fm = pm4py.read_pnml(model_path)
+        im, fm = _ensure_markings(net, im, fm)
+    else:
+        bpmn_model = pm4py.read_bpmn(model_path)
+        net, im, fm = pm4py.convert.convert_to_petri_net(bpmn_model)
+    return net, im, fm
 
 def get_fitness_per_trace(aligned_traces):
     fitness_data = []
@@ -67,32 +94,52 @@ def get_visible_end_activities(net, final_marking):
 
     return end_activities
 
-def get_all_activities_from_bpmn(bpmn_path):
-    tree = ET.parse(bpmn_path)
-    root = tree.getroot()
-    ns = {'bpmn': 'http://www.omg.org/spec/BPMN/20100524/MODEL'}
+def get_all_activities_from_model(model_path):
+    """Extract activity names from a BPMN or PNML file."""
+    ext = os.path.splitext(model_path)[1].lower()
+    if ext == '.pnml':
+        net, im, fm = pm4py.read_pnml(model_path)
+        activities = [t.label for t in net.transitions if t.label is not None]
+        return sorted(set(activities))
+    else:
+        tree = ET.parse(model_path)
+        root = tree.getroot()
+        ns = {'bpmn': 'http://www.omg.org/spec/BPMN/20100524/MODEL'}
+        activities = []
+        for task in root.findall(".//bpmn:task", ns):
+            if "name" in task.attrib:
+                activities.append(task.attrib["name"])
+        return sorted(set(activities))
 
-    activities = []
-    for task in root.findall(".//bpmn:task", ns):
-        if "name" in task.attrib:
-            activities.append(task.attrib["name"])
-    return sorted(set(activities))
 
-def extract_desired_outcomes_from_bpmn(bpmn_path,
+# Keep backward-compatible alias
+get_all_activities_from_bpmn = get_all_activities_from_model
+
+def extract_desired_outcomes_from_model(model_path,
     user_activity=None,
     condition=None
 ):
     """
     Returns a list of desired outcomes.
     If user_activity and condition are provided, use them.
-    Otherwise, fallback to default BPMN end-event logic.
+    Otherwise, fallback to default end-event logic (BPMN XML or Petri net).
     """
     if user_activity and condition:
         return []
-    bpmn_model = pm4py.read_bpmn(bpmn_path)
+
+    ext = os.path.splitext(model_path)[1].lower()
+
+    if ext == '.pnml':
+        net, im, fm = pm4py.read_pnml(model_path)
+        im, fm = _ensure_markings(net, im, fm)
+        ends = get_visible_end_activities(net, fm)
+        return list(ends)
+
+    # BPMN path
+    bpmn_model = pm4py.read_bpmn(model_path)
     net, im, fm = pm4py.convert.convert_to_petri_net(bpmn_model)
 
-    tree = ET.parse(bpmn_path)
+    tree = ET.parse(model_path)
     root = tree.getroot()
     ns = {'bpmn': 'http://www.omg.org/spec/BPMN/20100524/MODEL'}
 
@@ -117,6 +164,10 @@ def extract_desired_outcomes_from_bpmn(bpmn_path,
     else:
         ends = get_visible_end_activities(net, fm)
         return list(ends)
+
+
+# Keep backward-compatible alias
+extract_desired_outcomes_from_bpmn = extract_desired_outcomes_from_model
 
 from pm4py import get_trace_attributes
 
@@ -168,7 +219,10 @@ def build_trace_deviation_matrix_df(log, aligned_traces):
         # Trace attributes
         for attr in trace_attributes:
             row[attr] = trace.attributes.get(attr, None)
-
+        acts=[]
+        for event in trace:
+            acts.append(event['concept:name'])
+        row["activities"] = acts
         # Trace duration
         if len(trace) > 0:
             start = trace[0]["time:timestamp"]
@@ -194,7 +248,7 @@ def build_trace_deviation_matrix_df(log, aligned_traces):
 
         rows.append(row)
     # Base columns in order: trace_id, trace attributes, duration
-    base_columns = ["trace_id"] + trace_attributes + ["trace_duration_seconds"]
+    base_columns = ["trace_id"] + trace_attributes + ["trace_duration_seconds", "activities"]
 
     # Deviation columns in the order they appeared
     deviation_columns = [deviation_labels[dev] for dev in deviations]

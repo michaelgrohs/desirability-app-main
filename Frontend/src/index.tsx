@@ -4,6 +4,21 @@ import './index.css';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 
+// Log backend errors to browser console for all fetch calls
+const originalFetch = window.fetch;
+window.fetch = async (...args) => {
+  const response = await originalFetch(...args);
+  if (!response.ok) {
+    try {
+      const cloned = response.clone();
+      const data = await cloned.json();
+      console.error(`[API ${response.status}] ${response.url}:`, data.error || data);
+      if (data.traceback) console.error("Backend traceback:\n", data.traceback);
+    } catch { /* ignore parse errors */ }
+  }
+  return response;
+};
+
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );

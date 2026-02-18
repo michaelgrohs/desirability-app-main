@@ -6,6 +6,7 @@ import { useFileContext } from './FileContext';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip } from 'recharts';
 import InfoIcon from '@mui/icons-material/Info';
 import { ActivityDeviation } from './FileContext';
+import { useBottomNav } from './BottomNavContext';
 
 
 const COLORS = {
@@ -16,8 +17,14 @@ const COLORS = {
 
 const ViewBPMN: React.FC = () => {
   const navigate = useNavigate();
+  const { setContinue } = useBottomNav();
+
+  useEffect(() => {
+    setContinue({ label: "Activity Stats", onClick: () => navigate('/activity-stats') });
+    return () => setContinue(null);
+  }, [navigate, setContinue]);
   const bpmnContainerRef = useRef<HTMLDivElement | null>(null);
-  const modelerRef = useRef<BpmnModeler | null>(null);
+  const modelerRef = useRef<any>(null);
   const { bpmnFileContent, setExtractedElements, activityDeviations } = useFileContext();
 
 
@@ -346,24 +353,6 @@ const applyColors = (deviations: { [activityId: string]: { skipped: number; inse
         </Button>
       </Stack>
 
-      <Stack direction="row" spacing={2} justifyContent="space-between" sx={{ marginTop: 4, width: '100%' }}>
-        <Button
-          variant="contained"
-          color="primary"
-          sx={{ marginLeft: 2, fontSize: '1.5rem', fontWeight: 'bold' }}
-          onClick={() => navigate('/')}
-        >
-          ←
-        </Button>
-        <Button
-          variant="contained"
-          color="primary"
-          sx={{ marginRight: 2, fontSize: '1.5rem', fontWeight: 'bold' }}
-          onClick={() => navigate('/activity-stats')}
-        >
-          →
-        </Button>
-      </Stack>
     </Box>
   );
 };

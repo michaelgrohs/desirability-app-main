@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -20,6 +20,8 @@ import {
 import InfoIcon from '@mui/icons-material/Info';
 import { useNavigate } from 'react-router-dom';
 import { useFileContext } from './FileContext';
+import NavigatedViewer from 'bpmn-js/lib/NavigatedViewer';
+import { useBottomNav } from './BottomNavContext';
 
 import {
   Chart as ChartJS,
@@ -60,6 +62,16 @@ interface SelectedDeviation {
 const DeviationOverview: React.FC = () => {
   const navigate = useNavigate();
   const { selectedDeviations, setSelectedDeviations } = useFileContext();
+  const { setContinue } = useBottomNav();
+
+  useEffect(() => {
+    setContinue({
+      label: "Continue",
+      onClick: () => navigate("/select-dimensions"),
+      disabled: selectedDeviations.length === 0,
+    });
+    return () => setContinue(null);
+  }, [selectedDeviations, navigate, setContinue]);
 
   const [data, setData] = useState<DeviationData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -68,6 +80,12 @@ const DeviationOverview: React.FC = () => {
   const [previewColumns, setPreviewColumns] = useState<string[]>([]);
   const [previewRows, setPreviewRows] = useState<any[]>([]);
 
+  // Model viewer state
+  const [modelType, setModelType] = useState<'bpmn' | 'pnml' | null>(null);
+  const [modelContent, setModelContent] = useState<string | null>(null);
+  const bpmnContainerRef = useRef<HTMLDivElement | null>(null);
+  const viewerRef = useRef<any>(null);
+
     useEffect(() => {
       fetch(`${API_URL}/api/preview-matrix`)
         .then(res => res.json())
@@ -75,7 +93,39 @@ const DeviationOverview: React.FC = () => {
           setPreviewColumns(data.columns);
           setPreviewRows(data.rows);
         });
-    }, []);
+    }, [selectedDeviations]);
+  // -------- FETCH MODEL CONTENT --------
+  useEffect(() => {
+    fetch(`${API_URL}/api/model-content`)
+      .then(res => res.json())
+      .then(data => {
+        setModelType(data.type);
+        setModelContent(data.content);
+      })
+      .catch(err => console.error("Failed to load model:", err));
+  }, []);
+
+  // -------- RENDER BPMN VIEWER --------
+  useEffect(() => {
+    if (modelType === 'bpmn' && modelContent && bpmnContainerRef.current) {
+      if (viewerRef.current) {
+        viewerRef.current.destroy();
+      }
+      const viewer = new NavigatedViewer({ container: bpmnContainerRef.current });
+      viewerRef.current = viewer;
+
+      viewer.importXML(modelContent).then(() => {
+        const canvas = viewer.get('canvas') as any;
+        canvas.zoom('fit-viewport');
+      }).catch((err: any) => console.error('BPMN render error:', err));
+
+      return () => {
+        viewer.destroy();
+        viewerRef.current = null;
+      };
+    }
+  }, [modelType, modelContent]);
+
   // -------- MATRIX STATE --------
   const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
   const [matrixRows, setMatrixRows] = useState<any[]>([]);
@@ -117,6 +167,7 @@ const DeviationOverview: React.FC = () => {
   useEffect(() => {
     if (!apiUrl) return;
 
+    setMatrixLoading(true);
     fetch(`${apiUrl}/api/deviation-matrix`)
       .then(res => res.json())
       .then(json => {
@@ -127,7 +178,7 @@ const DeviationOverview: React.FC = () => {
       .catch(() => {
         setMatrixLoading(false);
       });
-  }, [apiUrl]);
+  }, [apiUrl, selectedDeviations]);
 
 
   const createHistogram = (values: number[], bins = 20) => {
@@ -244,6 +295,39 @@ const DeviationOverview: React.FC = () => {
         </Tooltip>
       </Box>
 
+      {/* MODEL VIEWER */}
+      {modelContent && (
+        <Paper sx={{ mb: 4, p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Process Model
+          </Typography>
+          {modelType === 'bpmn' ? (
+            <Box
+              ref={bpmnContainerRef}
+              sx={{
+                width: '100%',
+                height: 400,
+                border: '1px solid #eee',
+                borderRadius: 1,
+                overflow: 'hidden',
+              }}
+            />
+          ) : (
+            <Box
+              sx={{
+                width: '100%',
+                maxHeight: 400,
+                overflow: 'auto',
+                border: '1px solid #eee',
+                borderRadius: 1,
+                '& svg': { width: '100%', height: 'auto' },
+              }}
+              dangerouslySetInnerHTML={{ __html: modelContent }}
+            />
+          )}
+        </Paper>
+      )}
+
       {loading && (
         <Box display="flex" justifyContent="center" mt={6}>
           <CircularProgress />
@@ -280,21 +364,6 @@ const DeviationOverview: React.FC = () => {
             </Card>
           </Box>
 
-          {/* CONTINUE BUTTON */}
-          <Box display="flex" justifyContent="center" mt={4}>
-            <Button
-              variant="contained"
-              size="large"
-              disabled={selectedDeviations.length === 0}
-              onClick={() =>
-                  navigate("/select-dimensions", {
-                    state: { selectedDeviations }
-                  })
-                }
-            >
-              Continue
-            </Button>
-          </Box>
 
 
         {previewColumns.length > 0 && previewRows.length > 0 && (

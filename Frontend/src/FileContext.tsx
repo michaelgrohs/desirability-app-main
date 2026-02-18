@@ -75,7 +75,7 @@ interface FileContextType {
   bpmnFileContent: string | null;
   xesFileContent: string | null;
 
-  
+
   amountConformanceData: any[];
   setAmountConformanceData: React.Dispatch<React.SetStateAction<any[]>>;
 
@@ -113,6 +113,8 @@ setUniqueSequences: React.Dispatch<React.SetStateAction<UniqueSequenceBin[]>>;
   traceSequences: TraceSequence[];
 setTraceSequences: React.Dispatch<React.SetStateAction<TraceSequence[]>>;
 
+  // Reset everything
+  resetAll: () => void;
 
   // Outcome distribution
 
@@ -146,7 +148,23 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
   const [matching_mode, setmatching_mode] = useState<string>('');
   const [attributeConformance, setAttributeConformance] = useState<AttributeConformanceMap>({});
 
-
+  const resetAll = () => {
+    setBpmnFileContent(null);
+    setXesFileContent(null);
+    setExtractedElements([]);
+    setFitnessData([]);
+    setTraceSequences([]);
+    setConformanceBins([]);
+    setSelectedDeviations([]);
+    setSelectedDimensions([]);
+    setActivityDeviations({ deviations: [], total_traces: 0 });
+    setUniqueSequences([]);
+    setAmountConformanceData([]);
+    setOutcomeBins([]);
+    setDesiredOutcomes([]);
+    setmatching_mode('');
+    setAttributeConformance({});
+  };
 
   return (
     <FileContext.Provider
@@ -180,7 +198,8 @@ setTraceSequences,
 selectedDeviations,
   setSelectedDeviations,
   selectedDimensions,
-  setSelectedDimensions
+  setSelectedDimensions,
+  resetAll,
 
       }}
     >

@@ -18,6 +18,7 @@ import {
 
 import { useLocation, useNavigate } from "react-router-dom";
 import { useFileContext } from "./FileContext";
+import { useBottomNav } from "./BottomNavContext";
 
 const API_URL = process.env.REACT_APP_API_URL;
 
@@ -92,31 +93,15 @@ const levelColor = (level: CriticalityLevel) => {
 const CausalResults: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { setContinue } = useBottomNav();
 
-  const {
-    setSelectedDeviations,
-    setSelectedDimensions,
-    setUniqueSequences,
-    setActivityDeviations,
-    setOutcomeBins,
-    setDesiredOutcomes,
-    setAttributeConformance,
-    setAmountConformanceData,
-  } = useFileContext();
+  const { selectedDeviations, resetAll } = useFileContext();
 
   const handleReset = () => {
-    setSelectedDeviations([]);
-    setSelectedDimensions([]);
-    setUniqueSequences([]);
-    setActivityDeviations({ deviations: [], total_traces: 0 });
-    setOutcomeBins([]);
-    setDesiredOutcomes([]);
-    setAttributeConformance({});
-    setAmountConformanceData([]);
+    resetAll();
     navigate("/");
   };
 
-  const selectedDeviations = location.state?.selectedDeviations || [];
   const selectedDimensions = location.state?.selectedDimensions || [];
 
   const [results, setResults] = useState<CausalResult[]>([]);
@@ -276,6 +261,18 @@ const CausalResults: React.FC = () => {
 
     return map;
   };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setContinue({
+      label: "Criticality Overview",
+      onClick: () =>
+        navigate("/criticality-results", {
+          state: { results, criticalityMap: buildCriticalityMap() },
+        }),
+    });
+    return () => setContinue(null);
+  }, [results, boundaries, selectedLevels, navigate, setContinue]);
 
   if (loading) {
     return (
@@ -568,20 +565,6 @@ const CausalResults: React.FC = () => {
         })}
       </Box>
 
-      <Button
-        variant="contained"
-        sx={{ mt: 4 }}
-        onClick={() =>
-          navigate("/criticality-results", {
-            state: {
-              results,
-              criticalityMap: buildCriticalityMap(),
-            },
-          })
-        }
-      >
-        Continue to Criticality Overview
-      </Button>
     </Box>
   );
 };

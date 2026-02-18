@@ -4,7 +4,7 @@ import sys
 print("PYTHON EXECUTABLE:", sys.executable)
 print("ARCH:", platform.machine())
 
-
+import numpy as np
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -27,6 +27,7 @@ from process_mining.conformance_alignments import (
     get_conformance_by_resource,
     get_trace_sequences,
     get_all_activities_from_bpmn,
+    get_all_activities_from_model,
     build_trace_deviation_matrix_df
 )
 
@@ -34,8 +35,16 @@ from process_mining.activity_deviations import get_activity_deviations
 from pm4py.objects.log.importer.xes import importer as xes_importer
 
 
+import traceback
+
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    tb = traceback.format_exc()
+    print(tb)
+    return jsonify({"error": str(e), "traceback": tb}), 500
 
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -83,7 +92,7 @@ def upload_files():
     print("XES file:", xes_file)
 
     if not bpmn_file or not xes_file:
-        return jsonify({"error": "Missing BPMN or XES file"}), 400
+        return jsonify({"error": "Missing process model or event log file"}), 400
 
     if xes_file.filename == '':
         return jsonify({"error": "Empty XES filename"}), 400
@@ -265,7 +274,11 @@ def configure_dimensions():
 
     data = request.json
     dimension_configs = data.get("dimensions", [])
+    if last_uploaded_data.get("xes_log") is None:
+        raise ValueError("No XES log loaded.")
 
+    if last_uploaded_data.get("bpmn_path") is None:
+        raise ValueError("No BPMN model loaded.")
     # ✅ get the already cached trace x deviation matrix
     df = get_cached_deviation_matrix().copy()
 
@@ -283,26 +296,136 @@ def configure_dimensions():
 
             df[dimension] = df[column]
 
+
         elif comp_type == "formula":
-            base = config["baseColumn"]
 
-            if base not in df.columns:
-                return jsonify({"error": f"Base column '{base}' not found"}), 400
+            expression = config.get("expression")
 
-            subtract = config.get("subtractConstant", 0)
-            multiplier = config.get("multiplier", 1)
+            if not expression:
+                return jsonify({"error": "Missing formula expression"}), 400
 
-            df[dimension] = (df[base] - subtract) * multiplier
+            try:
+
+                df[dimension] = df.eval(
+
+                    expression,
+
+                    engine="python",
+
+                    local_dict={
+
+                        "where": np.where,
+
+                        "abs": np.abs,
+
+                        "log": np.log,
+
+                        "min": np.minimum,
+
+                        "max": np.maximum,
+
+                    }
+
+                )
+
+                # convert boolean result to int automatically
+
+                if df[dimension].dtype == bool:
+                    df[dimension] = df[dimension].astype(int)
+
+
+            except Exception as e:
+
+                return jsonify({"error": f"Invalid formula: {str(e)}"}), 400
+
 
         elif comp_type == "rule":
+
             column = config["column"]
+
+            operator = config.get("operator")
+
+            value = config.get("value")
 
             if column not in df.columns:
                 return jsonify({"error": f"Column '{column}' not found"}), 400
 
-            value = config["value"]
+            try:
 
-            df[dimension] = (df[column] == value).astype(int)
+                if operator == "equals":
+
+                    result = df[column] == value
+
+
+                elif operator == "not_equals":
+
+                    result = df[column] != value
+
+
+
+                elif operator == "contains":
+
+                    result = df[column].apply(
+
+                        lambda x: any(str(value) in str(v) for v in x) if isinstance(x, list) else str(value) in str(x)
+
+                    )
+
+
+
+
+                elif operator == "starts_with":
+
+                    result = df[column].apply(
+
+                        lambda x: any(str(v).startswith(str(value)) for v in x) if isinstance(x, list) else str(
+                            x).startswith(str(value))
+
+                    )
+
+
+
+
+                elif operator == "ends_with":
+
+                    result = df[column].apply(
+
+                        lambda x: any(str(v).endswith(str(value)) for v in x) if isinstance(x, list) else str(
+                            x).endswith(str(value))
+
+                    )
+
+
+                elif operator == "greater":
+
+                    result = df[column] > float(value)
+
+
+                elif operator == "less":
+
+                    result = df[column] < float(value)
+
+
+                elif operator == "greater_equal":
+
+                    result = df[column] >= float(value)
+
+
+                elif operator == "less_equal":
+
+                    result = df[column] <= float(value)
+
+
+                else:
+
+                    return jsonify({"error": f"Unsupported operator: {operator}"}), 400
+
+                df[dimension] = result.astype(int)
+
+
+            except Exception as e:
+
+                return jsonify({"error": f"Invalid rule: {str(e)}"}), 400
 
     # ✅ store result inside your cache dict instead of global variable
     last_uploaded_data["impact_matrix"] = df
@@ -432,12 +555,12 @@ def api_fitness():
 @app.route('/api/bpmn-activities', methods=['POST'])
 def api_bpmn_activities():
     if 'bpmn' not in request.files:
-        return jsonify({"error": "No BPMN file uploaded"}), 400
+        return jsonify({"error": "No process model file uploaded"}), 400
     bpmn_file = request.files['bpmn']
     file_path = os.path.join('/tmp', bpmn_file.filename)
     bpmn_file.save(file_path)
     last_uploaded_files['bpmn'] = file_path
-    activities = get_all_activities_from_bpmn(file_path)
+    activities = get_all_activities_from_model(file_path)
     return jsonify({"activities": activities})
 
 @app.route('/api/conformance-bins', methods=['GET'])
@@ -548,6 +671,29 @@ def preload_file(filename):
     return send_from_directory(UPLOAD_FOLDER, filename)
 
 
+@app.route('/api/model-content', methods=['GET'])
+def api_model_content():
+    """Return the uploaded model content. For BPMN: raw XML. For PNML: SVG visualization."""
+    model_path = last_uploaded_data.get('bpmn_path')
+    if not model_path:
+        return jsonify({"error": "No model uploaded yet"}), 400
+
+    ext = os.path.splitext(model_path)[1].lower()
+
+    if ext == '.bpmn':
+        with open(model_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({"type": "bpmn", "content": content})
+    elif ext == '.pnml':
+        from process_mining.conformance_alignments import read_model_as_petri_net
+        net, im, fm = read_model_as_petri_net(model_path)
+        from pm4py.visualization.petri_net import visualizer as pn_visualizer
+        gviz = pn_visualizer.apply(net, im, fm,
+                                    parameters={pn_visualizer.Variants.WO_DECORATION.value.Parameters.FORMAT: "svg"})
+        svg_content = pn_visualizer.serialize(gviz).decode('utf-8')
+        return jsonify({"type": "pnml", "content": svg_content})
+    else:
+        return jsonify({"error": f"Unsupported model type: {ext}"}), 400
 
 
 if __name__ == '__main__':

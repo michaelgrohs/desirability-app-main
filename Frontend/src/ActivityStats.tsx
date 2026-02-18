@@ -1,12 +1,19 @@
-import React from 'react';
-import { Box, Typography, Button, Stack, Tooltip, IconButton } from '@mui/material';
+import React, { useEffect } from 'react';
+import { Box, Typography, Stack, Tooltip, IconButton } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Cell, Legend } from 'recharts';
 import { useFileContext } from './FileContext';
 import InfoIcon from '@mui/icons-material/Info';
+import { useBottomNav } from './BottomNavContext';
 
 const ActivityStats: React.FC = () => {
   const navigate = useNavigate();
+  const { setContinue } = useBottomNav();
+
+  useEffect(() => {
+    setContinue({ label: "Select Deviations", onClick: () => navigate('/heatmap-aggr') });
+    return () => setContinue(null);
+  }, [navigate, setContinue]);
   const { extractedElements, activityDeviations } = useFileContext();
 const deviations = activityDeviations.deviations;
 
@@ -106,24 +113,6 @@ const activityStats = extractedElements
         </BarChart>
       </Box>
 
-      <Stack direction="row" spacing={2} justifyContent="space-between" sx={{ marginTop: 4, padding: 0, position: 'relative' }}>
-        <Button
-          variant="contained"
-          color="primary"
-          sx={{ marginLeft: 2, fontSize: '1.5rem', fontWeight: 'bold', backgroundColor: '#1565c0', marginTop: '24px' }}
-          onClick={() => navigate('/view-bpmn')}
-        >
-          ←
-        </Button>
-        <Button
-          variant="contained"
-          color="primary"
-          sx={{ marginRight: 2, fontSize: '1.5rem', fontWeight: 'bold', backgroundColor: '#1565c0', marginTop: '24px' }}
-          onClick={() => navigate('/heatmap-aggr')}
-        >
-          →
-        </Button>
-      </Stack>
     </Box>
   );
 };
