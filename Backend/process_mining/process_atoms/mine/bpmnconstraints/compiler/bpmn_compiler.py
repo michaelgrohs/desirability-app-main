@@ -1,8 +1,8 @@
 from itertools import combinations
 
-from process_atoms.mine.bpmnconstraints.templates.declare_templates import Declare
-from process_atoms.mine.bpmnconstraints.templates.matching_templates import Signal
-from process_atoms.mine.bpmnconstraints.utils.constants import (
+from process_mining.process_atoms.mine.bpmnconstraints.templates.declare_templates import Declare
+from process_mining.process_atoms.mine.bpmnconstraints.templates.matching_templates import Signal
+from process_mining.process_atoms.mine.bpmnconstraints.utils.constants import (
     ALLOWED_ACTIVITIES,
     ALLOWED_END_EVENTS,
     ALLOWED_GATEWAYS,

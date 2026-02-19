@@ -3,9 +3,9 @@ from json import JSONDecodeError, load
 from pathlib import Path
 from xml.etree import ElementTree
 
-from process_atoms.mine.bpmnconstraints.parser.json_model import JsonModel
-from process_atoms.mine.bpmnconstraints.parser.xml_model import XmlModel
-from process_atoms.mine.bpmnconstraints.utils.constants import (
+from process_mining.process_atoms.mine.bpmnconstraints.parser.json_model import JsonModel
+from process_mining.process_atoms.mine.bpmnconstraints.parser.xml_model import XmlModel
+from process_mining.process_atoms.mine.bpmnconstraints.utils.constants import (
     ACTIVITY_MAPPING,
     ALLOWED_ACTIVITIES,
     ALLOWED_CONNECTING_OBJECTS,
@@ -22,7 +22,7 @@ from process_atoms.mine.bpmnconstraints.utils.constants import (
     GATEWAY_NAMES,
     VALID_NAME_LENGTH,
 )
-from process_atoms.mine.bpmnconstraints.utils.sanitizer import Sanitizer
+from process_mining.process_atoms.mine.bpmnconstraints.utils.sanitizer import Sanitizer
 
 
 class Parser:

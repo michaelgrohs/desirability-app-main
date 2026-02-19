@@ -1,7 +1,7 @@
 import json
 from typing import List, Type
 
-from process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.models.processatom import ProcessAtom
 
 
 def serialize_objects_to_json(objects: List[ProcessAtom]) -> str:

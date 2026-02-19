@@ -1,7 +1,7 @@
 import re
 
-from process_atoms.mine.declare.enums.mp_constants import Template
-from process_atoms.mine.declare.models.decl_model import DeclModel
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template
+from process_mining.process_atoms.mine.declare.models.decl_model import DeclModel
 
 
 def parse_data_cond(cond):

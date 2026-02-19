@@ -1,10 +1,11 @@
+from __future__ import annotations
 import json
 import random
 from copy import deepcopy
 
-from process_atoms.mine.behavioral_profile import get_behavioral_profile_as_df
-from process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
-from process_atoms.mine.conversion.variantgenerator import VariantGenerator
+from process_mining.process_atoms.mine.behavioral_profile import get_behavioral_profile_as_df
+from process_mining.process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
+from process_mining.process_atoms.mine.conversion.variantgenerator import VariantGenerator
 
 
 def _insert_event(trace: list, tasks: set):

@@ -176,7 +176,7 @@ opponent_constraint = {
     Template.NOT_PRECEDENCE.templ_str: Template.PRECEDENCE.templ_str,
     Template.NOT_RESPONSE.templ_str: Template.RESPONSE.templ_str,
     Template.NOT_CHAIN_RESPONSE.templ_str: Template.CHAIN_RESPONSE.templ_str,
-    Template.NOT_RESPONDED_EXISTENCE: Template.RESPONDED_EXISTENCE.templ_str,
+    Template.NOT_RESPONDED_EXISTENCE.templ_str: Template.RESPONDED_EXISTENCE.templ_str,
     # Template.NOT_SUCCESSION: Template.SUCCESSION
 }
 
@@ -231,7 +231,7 @@ activation_based_on = {
     Template.ALTERNATE_SUCCESSION.templ_str: [0, 1],
     Template.CHAIN_SUCCESSION.templ_str: [0, 1],
     Template.CO_EXISTENCE.templ_str: [0, 1],
-    Template.NOT_RESPONDED_EXISTENCE: [0],
+    Template.NOT_RESPONDED_EXISTENCE.templ_str: [0],
     Template.NOT_RESPONSE.templ_str: [0],
     Template.NOT_CHAIN_RESPONSE.templ_str: [0],
     Template.NOT_PRECEDENCE.templ_str: [1],

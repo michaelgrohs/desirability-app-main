@@ -1,6 +1,6 @@
 import pandas as pd
 
-from process_atoms.mine.declare.enums.mp_constants import Template
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template
 
 LIKE_OBJ_1_ACT_1 = (
     " ((EVENT_NAME LIKE '%{OBJ_ARG}%') AND (EVENT_NAME LIKE '%{ARG_1}%')) "
@@ -680,6 +680,8 @@ query_templates_label = {
     + EVENT_NAME
     + MATCHES
     + matches_regex[Template.NOT_SUCCESSION.templ_str],
+    Template.NOT_ALTERNATE_SUCCESSION.templ_str: None,
+    Template.NOT_CHAIN_SUCCESSION.templ_str: None,
     "": "",
 }
 
@@ -740,7 +742,7 @@ class SignalQueryBuilder:
     ):
         # query_templates = signal_representations_violation if violation else signal_representations_actual
         if query_templates_label[templ_str] is None:
-            return None
+            return ""
         if not consider_vacuity:
             query = (
                 self.get_base_query(process, count=count)

@@ -14,8 +14,12 @@ import {
   MenuItem,
   TextField,
   Button,
-  Divider
+  Divider,
+  Slider,
+  Tooltip,
+  IconButton,
 } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 import { useNavigate } from "react-router-dom";
 import { useEffect } from 'react';
 import { useBottomNav } from './BottomNavContext';
@@ -51,17 +55,15 @@ const SelectDimensions: React.FC = () => {
   const [isComputing, setIsComputing] = useState(false);
     const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
     const [matrixRows, setMatrixRows] = useState<any[]>([]);
-    const [matrixLoading, setMatrixLoading] = useState(true);
 
     useEffect(() => {
-      setMatrixLoading(true);
       fetch(`${API_URL}/api/current-impact-matrix`)
         .then(res => res.json())
         .then(data => {
-          setMatrixColumns(data.columns);
-          setMatrixRows(data.rows);
-          setMatrixLoading(false);
-        });
+          setMatrixColumns(data.columns ?? []);
+          setMatrixRows(data.rows ?? []);
+        })
+        .catch(() => {});
     }, [selectedDeviations, selectedDimensions]);
 
   // ---------------------------
@@ -128,8 +130,8 @@ const SelectDimensions: React.FC = () => {
     // reload matrix after computing
     const updated = await fetch(`${API_URL}/api/current-impact-matrix`);
     const updatedJson = await updated.json();
-    setMatrixColumns(updatedJson.columns);
-    setMatrixRows(updatedJson.rows);
+    setMatrixColumns(updatedJson.columns ?? []);
+    setMatrixRows(updatedJson.rows ?? []);
 
     alert("Dimensions successfully computed!");
     } catch (error) {
@@ -161,12 +163,53 @@ const SelectDimensions: React.FC = () => {
     return () => setContinue(null);
   }, [selectedDimensions, selectedDeviations, isComputing, setContinue]);
 
+  // ---------------------------
+  // Column type helpers (for rule mode)
+  // ---------------------------
+  const isColumnNumerical = (col: string): boolean => {
+    const sample = matrixRows.find(
+      (row) => row[col] !== null && row[col] !== undefined && !Array.isArray(row[col])
+    );
+    return sample !== undefined && typeof sample[col] === "number";
+  };
+
+  const getColumnUniqueValues = (col: string): string[] => {
+    const values = new Set<string>();
+    matrixRows.forEach((row) => {
+      const val = row[col];
+      if (val === null || val === undefined) return;
+      if (Array.isArray(val)) {
+        val.forEach((v: string) => values.add(String(v)));
+      } else {
+        values.add(String(val));
+      }
+    });
+    return Array.from(values).sort();
+  };
+
+  const getColumnRange = (col: string): [number, number] => {
+    const nums = matrixRows
+      .map((row) => row[col])
+      .filter((v): v is number => typeof v === "number");
+    if (nums.length === 0) return [0, 100];
+    return [Math.min(...nums), Math.max(...nums)];
+  };
+
   return (
     <Box sx={{ width: "90vw", maxWidth: 900, margin: "0 auto", mt: 5 }}>
 
-      <Typography variant="h5" gutterBottom>
-        Select Impact Dimensions
-      </Typography>
+      <Box display="flex" alignItems="center" mb={2}>
+        <Typography variant="h5">Select Impact Dimensions</Typography>
+        <Tooltip
+          title="Define how each quality dimension should be measured using your trace data. 'Use Existing Column' maps a dimension directly to a numeric column. 'Formula' lets you compute a value via a pandas expression (e.g., col_a / col_b). 'Binary Rule' defines a dimension as 1 (desired) or 0 (undesired) based on a condition — for categorical columns you select the target value from a dropdown; for numeric columns a slider and text field let you set the threshold. Click 'Compute Dimensions' to apply your configuration before proceeding to causal analysis."
+          arrow
+          placement="right"
+        >
+          <IconButton size="small" sx={{ ml: 1 }}>
+            <InfoIcon fontSize="small" color="action" />
+          </IconButton>
+        </Tooltip>
+      </Box>
 
       {availableDimensions.map(dim => (
         <FormControlLabel
@@ -325,21 +368,80 @@ const SelectDimensions: React.FC = () => {
                   <MenuItem value="less_equal">Less or Equal</MenuItem>
                 </Select>
 
-                {/* Value Input */}
-                <TextField
-                  fullWidth
-                  sx={{ mt: 2 }}
-                  label="Value"
-                  value={configs[dim]?.config?.value || ""}
-                  onChange={(e) =>
-                    updateConfig(dim, {
-                      config: {
-                        ...configs[dim]?.config,
-                        value: e.target.value
+                {/* Value Input — dropdown for categorical, slider+text for numerical */}
+                {configs[dim]?.config?.column ? (
+                  isColumnNumerical(configs[dim].config.column) ? (() => {
+                    const [rMin, rMax] = getColumnRange(configs[dim].config.column);
+                    const step = rMin === rMax ? 1 : (rMax - rMin) / 1000;
+                    const rawVal = parseFloat(configs[dim]?.config?.value);
+                    const sliderVal = isNaN(rawVal) ? rMin : rawVal;
+                    return (
+                      <Box sx={{ mt: 2 }}>
+                        <Typography variant="caption" color="text.secondary">Value</Typography>
+                        <Slider
+                          value={sliderVal}
+                          min={rMin}
+                          max={rMax}
+                          step={step}
+                          onChange={(_, v) =>
+                            updateConfig(dim, {
+                              config: { ...configs[dim]?.config, value: String(v) }
+                            })
+                          }
+                          valueLabelDisplay="auto"
+                          valueLabelFormat={(v) =>
+                            v.toLocaleString('en-US', { maximumFractionDigits: 2 })
+                          }
+                        />
+                        <TextField
+                          fullWidth
+                          size="small"
+                          label="Value"
+                          value={(() => {
+                            const v = configs[dim]?.config?.value;
+                            if (!v || isNaN(Number(v))) return v || "";
+                            return Number(v).toLocaleString('en-US', { maximumFractionDigits: 6 });
+                          })()}
+                          onChange={(e) => {
+                            const raw = e.target.value.replace(/,/g, '');
+                            updateConfig(dim, {
+                              config: { ...configs[dim]?.config, value: raw }
+                            });
+                          }}
+                        />
+                      </Box>
+                    );
+                  })() : (
+                    <Select
+                      fullWidth
+                      sx={{ mt: 2 }}
+                      displayEmpty
+                      value={configs[dim]?.config?.value || ""}
+                      onChange={(e) =>
+                        updateConfig(dim, {
+                          config: { ...configs[dim]?.config, value: e.target.value }
+                        })
                       }
-                    })
-                  }
-                />
+                    >
+                      <MenuItem value=""><em>Select value…</em></MenuItem>
+                      {getColumnUniqueValues(configs[dim].config.column).map((v) => (
+                        <MenuItem key={v} value={v}>{v}</MenuItem>
+                      ))}
+                    </Select>
+                  )
+                ) : (
+                  <TextField
+                    fullWidth
+                    sx={{ mt: 2 }}
+                    label="Value"
+                    value={configs[dim]?.config?.value || ""}
+                    onChange={(e) =>
+                      updateConfig(dim, {
+                        config: { ...configs[dim]?.config, value: e.target.value }
+                      })
+                    }
+                  />
+                )}
               </>
             )}
 
@@ -403,6 +505,8 @@ const SelectDimensions: React.FC = () => {
                             <li key={idx}>{act}</li>
                           ))}
                         </ul>
+                      ) : typeof row[col] === "number" ? (
+                        row[col].toLocaleString('en-US')
                       ) : (
                         row[col]
                       )}

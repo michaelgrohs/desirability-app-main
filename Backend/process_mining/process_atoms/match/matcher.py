@@ -1,11 +1,12 @@
+from __future__ import annotations
 from typing import Callable, List
 
 #import faiss
 import numpy as np
 
-from process_atoms.mine.declare.enums.mp_constants import Template, directed_strings
-from process_atoms.models.processatom import FittedProcessAtom, ProcessAtom
-from process_atoms.utils import aggregate_process_atoms, atoms_to_df
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template, directed_strings
+from process_mining.process_atoms.models.processatom import FittedProcessAtom, ProcessAtom
+from process_mining.process_atoms.utils import aggregate_process_atoms, atoms_to_df
 
 
 def get_embeddings(model, strs: List[str]):

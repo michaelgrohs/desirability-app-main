@@ -1,21 +1,21 @@
 from math import ceil
 
-from process_atoms.mine.declare.checkers.choice import mp_choice, mp_exclusive_choice
-from process_atoms.mine.declare.checkers.existence import (
+from process_mining.process_atoms.mine.declare.checkers.choice import mp_choice, mp_exclusive_choice
+from process_mining.process_atoms.mine.declare.checkers.existence import (
     mp_absence,
     mp_end,
     mp_exactly,
     mp_existence,
     mp_init,
 )
-from process_atoms.mine.declare.checkers.negative_relation import (
+from process_mining.process_atoms.mine.declare.checkers.negative_relation import (
     mp_not_chain_precedence,
     mp_not_chain_response,
     mp_not_precedence,
     mp_not_responded_existence,
     mp_not_response,
 )
-from process_atoms.mine.declare.checkers.relation import (
+from process_mining.process_atoms.mine.declare.checkers.relation import (
     mp_alternate_precedence,
     mp_alternate_response,
     mp_chain_precedence,
@@ -24,10 +24,10 @@ from process_atoms.mine.declare.checkers.relation import (
     mp_responded_existence,
     mp_response,
 )
-from process_atoms.mine.declare.enums.mp_constants import Template, TraceState
-from process_atoms.mine.declare.models.checker_result import CheckerResult
-from process_atoms.mine.declare.models.decl_model import DeclModel
-from process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template, TraceState
+from process_mining.process_atoms.mine.declare.models.checker_result import CheckerResult
+from process_mining.process_atoms.mine.declare.models.decl_model import DeclModel
+from process_mining.process_atoms.models.event_log import EventLog
 
 
 def check_trace_conformance(trace, model, consider_vacuity):

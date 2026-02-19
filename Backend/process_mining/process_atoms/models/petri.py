@@ -1,3 +1,4 @@
+from __future__ import annotations
 # TODO rebuild this for our purposes
 import random
 import time

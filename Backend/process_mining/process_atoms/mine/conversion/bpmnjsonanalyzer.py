@@ -1,7 +1,8 @@
+from __future__ import annotations
 import re
 from collections import deque
 
-from process_atoms.constants import (
+from process_mining.process_atoms.constants import (
     DATA_OBJECT,
     ELEMENT_CATEGORY,
     ELEMENT_ID,

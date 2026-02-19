@@ -9,17 +9,17 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
-from process_atoms.mine.bpmnconstraints.mermaid.mermaidtranslation import Mermaid
-from process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
-from process_atoms.mine.bpmnconstraints.script_utils.constraint_comparison import (
+from process_mining.process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
+from process_mining.process_atoms.mine.bpmnconstraints.mermaid.mermaidtranslation import Mermaid
+from process_mining.process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
+from process_mining.process_atoms.mine.bpmnconstraints.script_utils.constraint_comparison import (
     ComparisonScript,
 )
-from process_atoms.mine.bpmnconstraints.script_utils.dataset_compiling import (
+from process_mining.process_atoms.mine.bpmnconstraints.script_utils.dataset_compiling import (
     CompilingScript,
 )
-from process_atoms.mine.bpmnconstraints.script_utils.dataset_parsing import ParserScript
-from process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
+from process_mining.process_atoms.mine.bpmnconstraints.script_utils.dataset_parsing import ParserScript
+from process_mining.process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 

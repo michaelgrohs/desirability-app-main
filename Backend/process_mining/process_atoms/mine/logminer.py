@@ -1,11 +1,12 @@
+from __future__ import annotations
 from uuid import uuid4
 
-from process_atoms.mine.declare.declare import Declare
-from process_atoms.mine.declare.enums.mp_constants import activation_based_on
-from process_atoms.mine.declare.parsers.decl_parser import parse_single_constraint
-from process_atoms.mine.declare.regexchecker import RegexChecker
-from process_atoms.models.event_log import EventLog
-from process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.mine.declare.declare import Declare
+from process_mining.process_atoms.mine.declare.enums.mp_constants import activation_based_on
+from process_mining.process_atoms.mine.declare.parsers.decl_parser import parse_single_constraint
+from process_mining.process_atoms.mine.declare.regexchecker import RegexChecker
+from process_mining.process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.models.processatom import ProcessAtom
 
 
 class LogMiner:

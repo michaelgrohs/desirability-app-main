@@ -1,8 +1,8 @@
 from typing import List
 
-from process_atoms.mine.declare.enums.mp_constants import activation_based_on
-from process_atoms.models.event_log import EventLog
-from process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.mine.declare.enums.mp_constants import activation_based_on
+from process_mining.process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.models.processatom import ProcessAtom
 
 
 def add_relevance_category_mined(atom: ProcessAtom):

@@ -1,11 +1,11 @@
 from typing import List
 from uuid import uuid4
 
-from process_atoms.mine.declare.declare import Declare
-from process_atoms.mine.declare.parsers.decl_parser import parse_decl
-from process_atoms.models.event_log import EventLog
-from process_atoms.models.processatom import ProcessAtom
-from process_atoms.models.violation import Violation
+from process_mining.process_atoms.mine.declare.declare import Declare
+from process_mining.process_atoms.mine.declare.parsers.decl_parser import parse_decl
+from process_mining.process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.models.violation import Violation
 
 
 class Checker:

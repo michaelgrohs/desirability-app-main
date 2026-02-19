@@ -3,9 +3,9 @@ from json import dumps
 from numpy import average, median
 from tqdm import tqdm
 
-from process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
-from process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
-from process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
+from process_mining.process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
+from process_mining.process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
+from process_mining.process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
 
 
 class CompilingScript:

@@ -9,13 +9,13 @@ import {
   CircularProgress,
   Divider,
   Checkbox,
-  Button,
   Paper,
   Table,
   TableHead,
   TableRow,
   TableCell,
-  TableBody
+  TableBody,
+  Chip,
 } from '@mui/material';
 import InfoIcon from '@mui/icons-material/Info';
 import { useNavigate } from 'react-router-dom';
@@ -54,14 +54,22 @@ interface DeviationData {
   insertions: DeviationItem[];
 }
 
-interface SelectedDeviation {
-  activity: string;
-  type: 'skip' | 'insertion';
+interface ConstraintItem {
+  constraint: string;
+  type: string;
+  operands: string[];
+  violation_count: number;
+  support: number;
+  confidence: number;
+}
+
+interface DeclarativeData {
+  constraints: ConstraintItem[];
 }
 
 const DeviationOverview: React.FC = () => {
   const navigate = useNavigate();
-  const { selectedDeviations, setSelectedDeviations } = useFileContext();
+  const { selectedDeviations, setSelectedDeviations, conformanceMode } = useFileContext();
   const { setContinue } = useBottomNav();
 
   useEffect(() => {
@@ -74,6 +82,7 @@ const DeviationOverview: React.FC = () => {
   }, [selectedDeviations, navigate, setContinue]);
 
   const [data, setData] = useState<DeviationData | null>(null);
+  const [declarativeData, setDeclarativeData] = useState<DeclarativeData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,8 +90,9 @@ const DeviationOverview: React.FC = () => {
   const [previewRows, setPreviewRows] = useState<any[]>([]);
 
   // Model viewer state
-  const [modelType, setModelType] = useState<'bpmn' | 'pnml' | null>(null);
+  const [modelType, setModelType] = useState<'bpmn' | 'pnml' | 'declarative' | null>(null);
   const [modelContent, setModelContent] = useState<string | null>(null);
+  const [modelConstraints, setModelConstraints] = useState<any[]>([]);
   const bpmnContainerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<any>(null);
 
@@ -94,13 +104,20 @@ const DeviationOverview: React.FC = () => {
           setPreviewRows(data.rows);
         });
     }, [selectedDeviations]);
+
   // -------- FETCH MODEL CONTENT --------
   useEffect(() => {
     fetch(`${API_URL}/api/model-content`)
       .then(res => res.json())
       .then(data => {
         setModelType(data.type);
-        setModelContent(data.content);
+        if (data.type === 'declarative') {
+          setModelConstraints(data.constraints || []);
+          setModelContent(null);
+        } else {
+          setModelContent(data.content);
+          setModelConstraints([]);
+        }
       })
       .catch(err => console.error("Failed to load model:", err));
   }, []);
@@ -126,11 +143,6 @@ const DeviationOverview: React.FC = () => {
     }
   }, [modelType, modelContent]);
 
-  // -------- MATRIX STATE --------
-  const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
-  const [matrixRows, setMatrixRows] = useState<any[]>([]);
-  const [matrixLoading, setMatrixLoading] = useState(true);
-
   const apiUrl = process.env.REACT_APP_API_URL;
 
   // =========================
@@ -152,34 +164,18 @@ const DeviationOverview: React.FC = () => {
         return json;
       })
       .then((json) => {
-        setData(json);
+        if (conformanceMode === 'declarative') {
+          setDeclarativeData(json);
+        } else {
+          setData(json);
+        }
         setLoading(false);
       })
       .catch((err) => {
         setError(err.message);
         setLoading(false);
       });
-  }, [apiUrl]);
-
-  // =========================
-  // Fetch Matrix Preview
-  // =========================
-  useEffect(() => {
-    if (!apiUrl) return;
-
-    setMatrixLoading(true);
-    fetch(`${apiUrl}/api/deviation-matrix`)
-      .then(res => res.json())
-      .then(json => {
-        setMatrixColumns(json.columns);
-        setMatrixRows(json.rows);
-        setMatrixLoading(false);
-      })
-      .catch(() => {
-        setMatrixLoading(false);
-      });
-  }, [apiUrl, selectedDeviations]);
-
+  }, [apiUrl, conformanceMode]);
 
   const createHistogram = (values: number[], bins = 20) => {
       const min = Math.min(...values);
@@ -200,7 +196,7 @@ const DeviationOverview: React.FC = () => {
     };
 
   // =========================
-  // Toggle Selection (UNCHANGED)
+  // BPMN mode: Toggle Selection
   // =========================
   const handleToggle = (activity: string, type: 'skip' | 'insertion') => {
       const column =
@@ -225,6 +221,27 @@ const DeviationOverview: React.FC = () => {
         ];
       });
     };
+
+  // =========================
+  // Declarative mode: Toggle Constraint
+  // =========================
+  const handleConstraintToggle = (constraint: ConstraintItem) => {
+    const column = constraint.constraint;
+    setSelectedDeviations((prev) => {
+      const exists = prev.find((d) => d.column === column);
+      if (exists) {
+        return prev.filter((d) => d.column !== column);
+      }
+      return [
+        ...prev,
+        {
+          column,
+          label: `${constraint.type}: ${constraint.operands[0]} → ${constraint.operands[1]}`,
+          type: constraint.type,
+        }
+      ];
+    });
+  };
 
 
   const renderList = (
@@ -259,7 +276,7 @@ const DeviationOverview: React.FC = () => {
           </Box>
 
           <Typography fontWeight="bold">
-            {item.count}
+            {item.count.toLocaleString('en-US')}
           </Typography>
         </Box>
 
@@ -277,6 +294,171 @@ const DeviationOverview: React.FC = () => {
     ));
   };
 
+  // =========================
+  // Declarative: Render constraint list grouped by type
+  // =========================
+  const renderConstraintList = (constraints: ConstraintItem[]) => {
+    const grouped: Record<string, ConstraintItem[]> = {};
+    constraints.forEach(c => {
+      if (!grouped[c.type]) grouped[c.type] = [];
+      grouped[c.type].push(c);
+    });
+
+    return Object.entries(grouped).map(([type, items]) => (
+      <Card key={type} sx={{ mb: 2 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>{type}</Typography>
+          <Divider sx={{ mb: 1 }} />
+          {items.map((item, index) => {
+            const maxCount = Math.max(...constraints.map(c => c.violation_count), 1);
+            return (
+              <Box key={index} sx={{ mb: 2 }}>
+                <Box display="flex" alignItems="center" justifyContent="space-between">
+                  <Box display="flex" alignItems="center">
+                    <Checkbox
+                      checked={selectedDeviations.some(d => d.column === item.constraint)}
+                      onChange={() => handleConstraintToggle(item)}
+                    />
+                    <Box>
+                      <Typography>
+                        {item.operands[0]} → {item.operands[1]}
+                      </Typography>
+                      <Box display="flex" gap={1} mt={0.5}>
+                        <Chip label={`Violations: ${item.violation_count.toLocaleString('en-US')}`} size="small" color="error" variant="outlined" />
+                        <Chip label={`Support: ${(item.support * 100).toFixed(1)}%`} size="small" variant="outlined" />
+                        <Chip label={`Confidence: ${(item.confidence * 100).toFixed(1)}%`} size="small" variant="outlined" />
+                      </Box>
+                    </Box>
+                  </Box>
+                </Box>
+
+                <Box sx={{ height: 6, backgroundColor: '#eee', borderRadius: 2, mt: 1 }}>
+                  <Box
+                    sx={{
+                      height: 6,
+                      width: `${(item.violation_count / maxCount) * 100}%`,
+                      backgroundColor: '#ed6c02',
+                      borderRadius: 2,
+                    }}
+                  />
+                </Box>
+              </Box>
+            );
+          })}
+        </CardContent>
+      </Card>
+    ));
+  };
+
+  // =========================
+  // Matrix preview table (shared between modes)
+  // =========================
+  const renderMatrixPreview = () => {
+    if (previewColumns.length === 0 || previewRows.length === 0) return null;
+
+    return (
+      <Box mt={9}>
+        <Typography variant="h6" gutterBottom>
+          Trace × Deviation Matrix
+        </Typography>
+
+        <Box sx={{ overflowX: 'auto', maxHeight: '10cm', overflowY: 'auto' }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                {previewColumns.map((col) => {
+                  const values = previewRows
+                    .map((row) => row[col])
+                    .filter((v) => v !== null && v !== undefined);
+
+                  if (!values.length) {
+                    return <TableCell key={col}>{col}</TableCell>;
+                  }
+
+                  const numericValues = values
+                    .filter((v) => !isNaN(Number(v)))
+                    .map(Number);
+
+                  const chartData =
+                    numericValues.length === values.length
+                      ? createHistogram(numericValues, 10)
+                      : values.reduce<Record<string, number>>((acc, v) => {
+                          acc[String(v)] = (acc[String(v)] || 0) + 1;
+                          return acc;
+                        }, {});
+
+                  const isHistogram = (
+                    data: any
+                  ): data is { labels: string[]; counts: number[] } =>
+                    data && 'labels' in data && 'counts' in data;
+
+                  const labels = isHistogram(chartData)
+                    ? chartData.labels
+                    : Object.keys(chartData);
+
+                  const dataValues = isHistogram(chartData)
+                    ? chartData.counts
+                    : Object.values(chartData);
+
+                  const backgroundColor = isHistogram(chartData)
+                    ? 'rgba(25,118,210,0.6)'
+                    : 'rgba(211,47,47,0.6)';
+
+                  return (
+                    <TableCell key={col} align="center">
+                      <Typography variant="caption">{col}</Typography>
+                      <Box sx={{ height: 40, mt: 0.5 }}>
+                        <Bar
+                          data={{
+                            labels,
+                            datasets: [
+                              {
+                                label: isHistogram(chartData)
+                                  ? 'Frequency'
+                                  : 'Count',
+                                data: dataValues,
+                                backgroundColor,
+                              },
+                            ],
+                          }}
+                          options={{
+                            responsive: true,
+                            plugins: { legend: { display: false } },
+                            scales: {
+                              x: { display: false },
+                              y: { display: false },
+                            },
+                            maintainAspectRatio: false,
+                          }}
+                        />
+                      </Box>
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
+            </TableHead>
+
+            <TableBody>
+              {previewRows.map((row, rowIndex) => (
+                <TableRow key={rowIndex}>
+                  {previewColumns.map((col) => (
+                    <TableCell key={col} align="center">
+                      {row[col] !== null && row[col] !== undefined
+                        ? typeof row[col] === "number"
+                          ? row[col].toLocaleString('en-US')
+                          : String(row[col])
+                        : ""}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
+      </Box>
+    );
+  };
+
   return (
     <Box sx={{ width: '90vw', maxWidth: 1100, margin: '0 auto', mt: 4 }}>
 
@@ -286,8 +468,12 @@ const DeviationOverview: React.FC = () => {
           Select Deviations of Interest
         </Typography>
         <Tooltip
-          title="Select skipped (model moves) and inserted (log moves) activities to analyze them in the next step."
+          title={conformanceMode === 'declarative'
+            ? "This page shows constraints mined from your event log that are violated by at least some traces. Each bar indicates how often the constraint is violated. Select the constraints you want to investigate — only selected deviations will be analyzed in the following steps."
+            : "This page shows deviations detected between your event log and the process model. Skipped activities (model moves) were expected by the model but did not occur. Inserted activities (log moves) occurred in the log but are not part of the model. The bar indicates frequency. Select the deviations you want to investigate — only selected deviations will be analyzed in the following steps."
+          }
           arrow
+          placement="right"
         >
           <IconButton>
             <InfoIcon color="primary" />
@@ -295,8 +481,8 @@ const DeviationOverview: React.FC = () => {
         </Tooltip>
       </Box>
 
-      {/* MODEL VIEWER */}
-      {modelContent && (
+      {/* MODEL VIEWER — BPMN mode */}
+      {conformanceMode === 'bpmn' && modelContent && (
         <Paper sx={{ mb: 4, p: 2 }}>
           <Typography variant="h6" gutterBottom>
             Process Model
@@ -328,6 +514,39 @@ const DeviationOverview: React.FC = () => {
         </Paper>
       )}
 
+      {/* MODEL VIEWER — Declarative mode: constraint summary table */}
+      {conformanceMode === 'declarative' && modelConstraints.length > 0 && (
+        <Paper sx={{ mb: 4, p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Mined Declarative Model ({modelConstraints.length.toLocaleString()} constraints)
+          </Typography>
+          <Box sx={{ overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Type</TableCell>
+                  <TableCell>Operand A</TableCell>
+                  <TableCell>Operand B</TableCell>
+                  <TableCell align="right">Support</TableCell>
+                  <TableCell align="right">Confidence</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {modelConstraints.map((c: any, i: number) => (
+                  <TableRow key={i}>
+                    <TableCell>{c.type}</TableCell>
+                    <TableCell>{c.op_0}</TableCell>
+                    <TableCell>{c.op_1}</TableCell>
+                    <TableCell align="right">{(c.support * 100).toFixed(1)}%</TableCell>
+                    <TableCell align="right">{(c.confidence * 100).toFixed(1)}%</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        </Paper>
+      )}
+
       {loading && (
         <Box display="flex" justifyContent="center" mt={6}>
           <CircularProgress />
@@ -340,7 +559,8 @@ const DeviationOverview: React.FC = () => {
         </Typography>
       )}
 
-      {!loading && !error && data && (
+      {/* BPMN mode: skips & insertions */}
+      {!loading && !error && conformanceMode === 'bpmn' && data && (
         <>
           <Box display="flex" gap={4}>
             <Card sx={{ flex: 1 }}>
@@ -364,109 +584,15 @@ const DeviationOverview: React.FC = () => {
             </Card>
           </Box>
 
+          {renderMatrixPreview()}
+        </>
+      )}
 
-
-        {previewColumns.length > 0 && previewRows.length > 0 && (
-          <Box mt={9}>
-            <Typography variant="h6" gutterBottom>
-              Trace × Deviation Matrix
-            </Typography>
-
-            <Box sx={{ overflowX: 'auto', maxHeight: '10cm', overflowY: 'auto' }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    {previewColumns.map((col) => {
-                      const values = previewRows
-                        .map((row) => row[col])
-                        .filter((v) => v !== null && v !== undefined);
-
-                      if (!values.length) {
-                        return <TableCell key={col}>{col}</TableCell>;
-                      }
-
-                      const numericValues = values
-                        .filter((v) => !isNaN(Number(v)))
-                        .map(Number);
-
-                      const chartData =
-                        numericValues.length === values.length
-                          ? createHistogram(numericValues, 10)
-                          : values.reduce<Record<string, number>>((acc, v) => {
-                              acc[String(v)] = (acc[String(v)] || 0) + 1;
-                              return acc;
-                            }, {});
-
-                      const isHistogram = (
-                        data: any
-                      ): data is { labels: string[]; counts: number[] } =>
-                        data && 'labels' in data && 'counts' in data;
-
-                      const labels = isHistogram(chartData)
-                        ? chartData.labels
-                        : Object.keys(chartData);
-
-                      const dataValues = isHistogram(chartData)
-                        ? chartData.counts
-                        : Object.values(chartData);
-
-                      const backgroundColor = isHistogram(chartData)
-                        ? 'rgba(25,118,210,0.6)'
-                        : 'rgba(211,47,47,0.6)';
-
-                      return (
-                        <TableCell key={col} align="center">
-                          <Typography variant="caption">{col}</Typography>
-                          <Box sx={{ height: 40, mt: 0.5 }}>
-                            <Bar
-                              data={{
-                                labels,
-                                datasets: [
-                                  {
-                                    label: isHistogram(chartData)
-                                      ? 'Frequency'
-                                      : 'Count',
-                                    data: dataValues,
-                                    backgroundColor,
-                                  },
-                                ],
-                              }}
-                              options={{
-                                responsive: true,
-                                plugins: { legend: { display: false } },
-                                scales: {
-                                  x: { display: false },
-                                  y: { display: false },
-                                },
-                                maintainAspectRatio: false,
-                              }}
-                            />
-                          </Box>
-                        </TableCell>
-                      );
-                    })}
-                  </TableRow>
-                </TableHead>
-
-                <TableBody>
-                  {previewRows.map((row, rowIndex) => (
-                    <TableRow key={rowIndex}>
-                      {previewColumns.map((col) => (
-                        <TableCell key={col} align="center">
-                          {row[col] !== null ? String(row[col]) : ''}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Box>
-          </Box>
-        )}
-
-
-
-
+      {/* Declarative mode: constraint list */}
+      {!loading && !error && conformanceMode === 'declarative' && declarativeData && (
+        <>
+          {renderConstraintList(declarativeData.constraints)}
+          {renderMatrixPreview()}
         </>
       )}
     </Box>

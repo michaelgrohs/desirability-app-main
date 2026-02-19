@@ -19,13 +19,17 @@ interface OutcomeBin {
   percentageEndingCorrectly: number;
 }
 
+export type ConformanceMode = 'bpmn' | 'declarative';
+
 interface DeviationSelection {
-  column: string;   // exact matrix column name
-  label: string;    // activity name without prefix
-  type: 'skip' | 'insertion';
+  column: string;   // exact matrix column name (e.g., "(Skip A)" or "Precedence_A_B")
+  label: string;    // human-readable label
+  type: string;     // 'skip' | 'insertion' | 'Precedence' | 'Response' | etc.
 }
 
 interface FileContextType {
+  conformanceMode: ConformanceMode;
+  setConformanceMode: React.Dispatch<React.SetStateAction<ConformanceMode>>;
   selectedDeviations: DeviationSelection[];
   setSelectedDeviations: React.Dispatch<React.SetStateAction<DeviationSelection[]>>;
   selectedDimensions: string[];
@@ -71,6 +75,10 @@ interface ActivityDeviationResult {
 }
 
 interface FileContextType {
+  // Conformance mode
+  conformanceMode: ConformanceMode;
+  setConformanceMode: React.Dispatch<React.SetStateAction<ConformanceMode>>;
+
   // File contents
   bpmnFileContent: string | null;
   xesFileContent: string | null;
@@ -125,6 +133,7 @@ const FileContext = createContext<FileContextType | undefined>(undefined);
 
 // Provider component
 export const FileProvider = ({ children }: { children: ReactNode }) => {
+  const [conformanceMode, setConformanceMode] = useState<ConformanceMode>('bpmn');
   const [bpmnFileContent, setBpmnFileContent] = useState<string | null>(null);
   const [xesFileContent, setXesFileContent] = useState<string | null>(null);
   const [extractedElements, setExtractedElements] = useState<ExtractedElement[]>([]);
@@ -149,6 +158,7 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
   const [attributeConformance, setAttributeConformance] = useState<AttributeConformanceMap>({});
 
   const resetAll = () => {
+    setConformanceMode('bpmn');
     setBpmnFileContent(null);
     setXesFileContent(null);
     setExtractedElements([]);
@@ -169,6 +179,8 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
   return (
     <FileContext.Provider
       value={{
+        conformanceMode,
+        setConformanceMode,
         bpmnFileContent,
         xesFileContent,
         extractedElements,

@@ -1,4 +1,4 @@
-from process_atoms.mine.bpmnconstraints.utils.constants import (
+from process_mining.process_atoms.mine.bpmnconstraints.utils.constants import (
     CHILD_SHAPES,
     ELEMENT_ID,
     ID,

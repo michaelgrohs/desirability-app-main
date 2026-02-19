@@ -1,17 +1,18 @@
+from __future__ import annotations
 import json
 from typing import Callable, List
 
-from process_atoms.match.matcher import Matcher
-from process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
-from process_atoms.mine.conversion.variantgenerator import VariantGenerator
-from process_atoms.mine.declare.regexchecker import RegexChecker, regex_representations
-from process_atoms.mine.logminer import LogMiner
-from process_atoms.mine.modelminer import ModelMiner
-from process_atoms.models.event_log import EventLog, split_on_case_attribute
-from process_atoms.models.processatom import ProcessAtom
-from process_atoms.models.violation import Violation
-from process_atoms.signalquerybuilder import SignalQueryBuilder
-from process_atoms.utils import aggregate_process_atoms
+from process_mining.process_atoms.match.matcher import Matcher
+from process_mining.process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
+from process_mining.process_atoms.mine.conversion.variantgenerator import VariantGenerator
+from process_mining.process_atoms.mine.declare.regexchecker import RegexChecker, regex_representations
+from process_mining.process_atoms.mine.logminer import LogMiner
+from process_mining.process_atoms.mine.modelminer import ModelMiner
+from process_mining.process_atoms.models.event_log import EventLog, split_on_case_attribute
+from process_mining.process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.models.violation import Violation
+from process_mining.process_atoms.signalquerybuilder import SignalQueryBuilder
+from process_mining.process_atoms.utils import aggregate_process_atoms
 
 
 class ProcessAtoms:

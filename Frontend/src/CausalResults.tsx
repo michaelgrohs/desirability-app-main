@@ -14,7 +14,10 @@ import {
   FormGroup,
   Slider,
   Button,
+  Tooltip,
+  IconButton,
 } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 
 import { useLocation, useNavigate } from "react-router-dom";
 import { useFileContext } from "./FileContext";
@@ -68,6 +71,26 @@ interface CriticalityRule {
 interface CriticalityMap {
   [dim: string]: CriticalityRule[];
 }
+
+// Dimensions where ATE represents a probability change (0–1 scale, binary outcome)
+const BINARY_DIMENSIONS = new Set(["outcome", "compliance", "quality"]);
+
+const getAteTooltip = (dimension: string, deviation: string, ate: number): string => {
+  if (!isFinite(ate)) return "";
+  const dimLower = dimension.toLowerCase();
+  const isBinary = BINARY_DIMENSIONS.has(dimLower);
+  const direction = ate < 0 ? "decreased" : "increased";
+  const absAte = Math.abs(ate);
+
+  if (isBinary) {
+    const pct = (absAte * 100).toLocaleString('en-US', { maximumFractionDigits: 1 });
+    return `The likelihood of a positive ${dimension} is ${direction} on average by ${pct}% if "${deviation}" happens.`;
+  } else {
+    const fmtAbs = absAte.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    const fmtAte = ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `The ${dimension} CATE is ${fmtAte}. This means that ${dimension} is ${direction} by ${fmtAbs} on average whenever "${deviation}" occurs.`;
+  }
+};
 
 const levelColor = (level: CriticalityLevel) => {
   switch (level) {
@@ -294,9 +317,18 @@ const CausalResults: React.FC = () => {
         </Button>
       </Box>
 
-      <Typography variant="h5" gutterBottom>
-        Average Treatment Effects (ATE)
-      </Typography>
+      <Box display="flex" alignItems="center" mb={1}>
+        <Typography variant="h5">Average Treatment Effects (ATE)</Typography>
+        <Tooltip
+          title="Each cell shows the Average Treatment Effect (ATE) of a deviation on a process dimension, with the p-value in parentheses. For binary dimensions (outcome, compliance, quality), the ATE represents the change in probability of a positive outcome. For continuous dimensions (time, costs), the ATE is the average unit change. Hover over any cell for a plain-language interpretation. Use the criticality configurator below to assign qualitative labels to ATE ranges."
+          arrow
+          placement="right"
+        >
+          <IconButton size="small" sx={{ ml: 1 }}>
+            <InfoIcon fontSize="small" color="action" />
+          </IconButton>
+        </Tooltip>
+      </Box>
 
       <Divider sx={{ my: 3 }} />
 
@@ -329,18 +361,26 @@ const CausalResults: React.FC = () => {
                 const bgColor = getCellColor(dim, result.ate, maxAbsEffect);
 
                 return (
-                  <TableCell
+                  <Tooltip
                     key={dev}
-                    align="center"
-                    style={{ backgroundColor: bgColor, minWidth: 80 }}
+                    title={result.ate !== undefined ? getAteTooltip(dim, dev, result.ate) : ""}
+                    arrow
+                    placement="top"
                   >
-                   <Typography variant="body2" sx={{ fontWeight: "bold" }}>
-                      {result.ate !== undefined ? result.ate.toFixed(2) : "-"}{" "}
-                      <Typography component="span" variant="caption">
-                        ({result.p_value !== undefined ? result.p_value.toFixed(3) : "-"})
+                    <TableCell
+                      align="center"
+                      style={{ backgroundColor: bgColor, minWidth: 80, cursor: "help" }}
+                    >
+                      <Typography variant="body2" sx={{ fontWeight: "bold" }}>
+                        {result.ate !== undefined
+                          ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                          : "-"}{" "}
+                        <Typography component="span" variant="caption">
+                          ({result.p_value !== undefined ? result.p_value.toFixed(3) : "-"})
+                        </Typography>
                       </Typography>
-                    </Typography>
-                  </TableCell>
+                    </TableCell>
+                  </Tooltip>
                 );
               })}
             </TableRow>
@@ -366,9 +406,10 @@ const CausalResults: React.FC = () => {
             const rawMin = Math.min(...values);
             const rawMax = Math.max(...values);
 
-            // ensure at least -10/+10 scale
-            const min = Math.min(-10, rawMin);
-            const max = Math.max(10, rawMax);
+            // Use ±1 minimum scale when all ATEs are within [-1, 1], otherwise ±10
+            const allWithinUnit = rawMin >= -1 && rawMax <= 1;
+            const min = Math.min(allWithinUnit ? -1 : -10, rawMin);
+            const max = Math.max(allWithinUnit ? 1 : 10, rawMax);
 
             // optional padding to avoid 0-length gradient
             const padding = (max - min) * 0.05; // 5%
@@ -479,7 +520,7 @@ const CausalResults: React.FC = () => {
                   }))
                 }
                 valueLabelDisplay="auto"
-                valueLabelFormat={(v) => v.toFixed(1)}
+                valueLabelFormat={(v) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 track={false}
                 sx={{
                   height: 8,
@@ -508,7 +549,7 @@ const CausalResults: React.FC = () => {
                     variant="caption"
                     sx={{ position: "absolute", left: 0, transform: "translateX(0%)" }}
                   >
-                    {min.toFixed(1)}
+                    {min.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </Typography>
 
                   {/* cuts */}
@@ -523,7 +564,7 @@ const CausalResults: React.FC = () => {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {cut.toFixed(1)}
+                      {cut.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </Typography>
                   ))}
 
@@ -532,7 +573,7 @@ const CausalResults: React.FC = () => {
                     variant="caption"
                     sx={{ position: "absolute", left: "100%", transform: "translateX(-100%)" }}
                   >
-                    {max.toFixed(1)}
+                    {max.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </Typography>
                 </Box>
 

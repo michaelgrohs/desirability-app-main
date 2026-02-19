@@ -9,7 +9,10 @@ import {
   TableBody,
   Divider,
   Button,
+  Tooltip,
+  IconButton,
 } from "@mui/material";
+import InfoIcon from "@mui/icons-material/Info";
 import { useLocation, useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -173,7 +176,7 @@ const CriticalityResults: React.FC = () => {
           const result = results.find((r) => r.dimension === dim && r.deviation === dev);
           if (!result) return "";
           const label = getCriticality(result.ate, criticalityMap[dim]);
-          return `${label ?? "-"} (${result.ate.toFixed(2)})`;
+          return `${label ?? "-"} (${result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
         }),
       ]),
     });
@@ -220,8 +223,19 @@ const CriticalityResults: React.FC = () => {
 
   return (
     <Box sx={{ width: "90vw", maxWidth: 1100, margin: "0 auto", mt: 4 }}>
-      <Box display="flex" justifyContent="space-between" mb={4}>
-        <Typography variant="h5">Criticality Overview</Typography>
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={4}>
+        <Box display="flex" alignItems="center">
+          <Typography variant="h5">Criticality Overview</Typography>
+          <Tooltip
+            title="Each cell shows the criticality label (e.g., 'very negative', 'neutral') assigned to the ATE of a deviation for a given dimension, based on the thresholds you configured on the previous page. The priority table ranks deviations by their overall negative impact across all dimensions — use the arrows to adjust the order manually. Export as CSV or PDF to share results."
+            arrow
+            placement="right"
+          >
+            <IconButton size="small" sx={{ ml: 1 }}>
+              <InfoIcon fontSize="small" color="action" />
+            </IconButton>
+          </Tooltip>
+        </Box>
       </Box>
 
       <Box display="flex" gap={3} mb={3} alignItems="center" flexWrap="wrap">
@@ -288,7 +302,7 @@ const CriticalityResults: React.FC = () => {
                       fontWeight: 500,
                     }}
                   >
-                    {label ?? "-"} ({result.ate.toFixed(2)})
+                    {label ?? "-"} ({result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
                   </TableCell>
                 );
               })}
@@ -318,7 +332,7 @@ const CriticalityResults: React.FC = () => {
               <TableRow key={item.deviation}>
                 <TableCell>{index + 1}</TableCell>
                 <TableCell>{item.deviation}</TableCell>
-                <TableCell>{item.score}</TableCell>
+                <TableCell>{item.score.toLocaleString('en-US')}</TableCell>
                 <TableCell>
                   {item.reasons.length > 0 ? item.reasons.join(", ") : "No negative impact"}
                 </TableCell>

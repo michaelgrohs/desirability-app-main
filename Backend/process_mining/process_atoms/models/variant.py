@@ -1,16 +1,18 @@
+from __future__ import annotations
+from typing import Dict, List, Tuple
 from pydantic import BaseModel
 
 
 class Variant(BaseModel):
     id: str
     log: str
-    activities: tuple[str, ...]
+    activities: Tuple[str, ...]
     frequency: int
-    cases: list[str]
+    cases: List[str]
     average_duration: float
 
 
 class ViolatedVariant(BaseModel):
     id: str
     variant: Variant
-    activities: dict[str, list[str]]
+    activities: Dict[str, List[str]]

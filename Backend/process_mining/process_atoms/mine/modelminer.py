@@ -1,20 +1,21 @@
+from __future__ import annotations
 import json
 from uuid import uuid4
 
-from process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
-from process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
-from process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
-from process_atoms.mine.conversion.variantgenerator import VariantGenerator
-from process_atoms.mine.declare.enums.mp_constants import (
+from process_mining.process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
+from process_mining.process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
+from process_mining.process_atoms.mine.conversion.bpmnjsonanalyzer import parse_model_elements
+from process_mining.process_atoms.mine.conversion.variantgenerator import VariantGenerator
+from process_mining.process_atoms.mine.declare.enums.mp_constants import (
     Template,
     activation_based_on,
     binary_strings,
     unary_strings,
 )
-from process_atoms.mine.declare.parsers.decl_parser import parse_single_constraint
-from process_atoms.mine.declare.regexchecker import RegexChecker
-from process_atoms.models.processatom import ProcessAtom
-from process_atoms.utils import reduce_redundancies, remove_useless_atoms
+from process_mining.process_atoms.mine.declare.parsers.decl_parser import parse_single_constraint
+from process_mining.process_atoms.mine.declare.regexchecker import RegexChecker
+from process_mining.process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.utils import reduce_redundancies, remove_useless_atoms
 
 required_templates = {
     Template.CHAIN_RESPONSE.templ_str: (

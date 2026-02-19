@@ -1,4 +1,4 @@
-from process_atoms.models import petri
+from process_mining.process_atoms.models import petri
 
 
 def playout_net(net, initial_marking, final_marking):

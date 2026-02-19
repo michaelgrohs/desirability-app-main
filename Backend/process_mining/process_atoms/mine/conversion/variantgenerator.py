@@ -1,6 +1,7 @@
+from __future__ import annotations
 import pandas as pd
 
-from process_atoms.constants import (
+from process_mining.process_atoms.constants import (
     DATA_OBJECT,
     ELEMENT_CATEGORY,
     ELEMENT_ID,
@@ -8,16 +9,16 @@ from process_atoms.constants import (
     USELESS_LABELS,
     XES_NAME,
 )
-from process_atoms.mine.conversion.bpmnjsonanalyzer import (
+from process_mining.process_atoms.mine.conversion.bpmnjsonanalyzer import (
     replace_multiple_substrings,
     sanitize_label_full,
 )
-from process_atoms.mine.conversion.jsontopetrinetconverter import (
+from process_mining.process_atoms.mine.conversion.jsontopetrinetconverter import (
     JsonToPetriNetConverter,
 )
-from process_atoms.models import petri
-from process_atoms.models.column_types import CaseID, EventTime, EventType
-from process_atoms.models.event_log import EventLog, EventLogSchemaTypes
+from process_mining.process_atoms.models import petri
+from process_mining.process_atoms.models.column_types import CaseID, EventTime, EventType
+from process_mining.process_atoms.models.event_log import EventLog, EventLogSchemaTypes
 
 
 class VariantGenerator:

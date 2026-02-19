@@ -4,7 +4,17 @@ import sys
 print("PYTHON EXECUTABLE:", sys.executable)
 print("ARCH:", platform.machine())
 
+print(">>> BEFORE pm4py import")
+import pm4py
+print(">>> AFTER pm4py import")
+
+print(">>> BEFORE dowhy import")
+from dowhy import CausalModel
+print(">>> AFTER dowhy import")
+
+import json
 import numpy as np
+import pm4py
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -63,7 +73,11 @@ last_uploaded_data = {
     "alignments": None,
     "deviation_matrix": None,
     "deviation_labels": None,
-    "impact_matrix": None
+    "impact_matrix": None,
+    "mode": "bpmn",
+    "atoms": None,
+    "atoms_df": None,
+    "event_log_pa": None,
 }
 
 def reset_cache():
@@ -72,6 +86,16 @@ def reset_cache():
     last_uploaded_data["alignments"] = None
     last_uploaded_data["deviation_matrix"] = None
     last_uploaded_data["impact_matrix"] = None
+    last_uploaded_data["mode"] = "bpmn"
+    last_uploaded_data["atoms"] = None
+    last_uploaded_data["atoms_df"] = None
+    last_uploaded_data["event_log_pa"] = None
+
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    reset_cache()
+    return jsonify({"message": "Cache reset successfully"})
+
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -110,9 +134,14 @@ def upload_files():
     print("Saved BPMN to:", bpmn_path)
 
 
-    # Store paths
+    # Store paths and clear any previously cached results from prior uploads
     last_uploaded_data['bpmn_path'] = bpmn_path
     last_uploaded_data['xes_path'] = xes_path
+    last_uploaded_data['deviation_matrix'] = None
+    last_uploaded_data['impact_matrix'] = None
+    last_uploaded_data['atoms'] = None
+    last_uploaded_data['atoms_df'] = None
+    last_uploaded_data['event_log_pa'] = None
 
     # Parse BPMN
     bpmn_model = parse_bpmn(bpmn_path)
@@ -134,12 +163,247 @@ def upload_files():
 
     alignments = calculate_alignments(bpmn_path, xes_log)
     last_uploaded_data['alignments'] = alignments
+    last_uploaded_data['mode'] = 'bpmn'
 
     print("Alignments computed successfully")
 
     return jsonify({
         "message": "Files uploaded and alignments computed",
         "alignment_count": len(alignments)
+    })
+
+
+@app.route('/api/available-templates', methods=['GET'])
+def available_templates():
+    from process_mining.process_atoms.mine.declare.enums.mp_constants import Template
+    templates = [t.templ_str for t in Template if t.is_binary]
+    return jsonify({"templates": templates})
+
+
+@app.route('/upload-declarative', methods=['POST'])
+def upload_declarative():
+    from process_mining.process_atoms.processatoms import ProcessAtoms
+    from process_mining.process_atoms.mine.declare.regexchecker import RegexChecker
+    from process_mining.process_atoms.models.event_log import EventLog, EventLogSchemaTypes
+    from process_mining.process_atoms.models.column_types import (
+        CaseID, Categorical, EventType, EventTime, Continuous,
+    )
+
+    print("\n==== UPLOAD DECLARATIVE CALLED ====")
+
+    xes_file = request.files.get('xes')
+    if not xes_file or xes_file.filename == '':
+        return jsonify({"error": "Missing event log file"}), 400
+
+    templates_json = request.form.get('templates', '[]')
+    min_support_str = request.form.get('min_support', '0.1')
+
+    considered_templates = json.loads(templates_json)
+    min_support = float(min_support_str)
+
+    upload_folder = "uploads"
+    os.makedirs(upload_folder, exist_ok=True)
+    xes_path = os.path.join(upload_folder, xes_file.filename)
+    xes_file.save(xes_path)
+
+    last_uploaded_data['xes_path'] = xes_path
+    last_uploaded_data['bpmn_path'] = None
+    last_uploaded_data['bpmn_model'] = None
+    last_uploaded_data['alignments'] = None
+    last_uploaded_data['deviation_matrix'] = None
+    last_uploaded_data['impact_matrix'] = None
+
+    # Parse log with pm4py (for downstream compatibility)
+    filename_base, file_extension = os.path.splitext(xes_path)
+    if file_extension == '.csv':
+        log_csv = pd.read_csv(xes_path, encoding='utf-8-sig')
+        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], utc=True)
+        xes_log = log_converter.apply(log_csv)
+    elif file_extension == '.xes':
+        xes_log = xes_importer.apply(xes_path)
+    else:
+        return jsonify({"error": "Unsupported log format"}), 400
+
+    last_uploaded_data['xes_log'] = xes_log
+
+    # Build process_atoms EventLog from pm4py log
+    log_df = pm4py.convert_to_dataframe(xes_log)
+
+    # Auto-detect columns
+    case_col = None
+    activity_col = None
+    timestamp_col = None
+    for col in log_df.columns:
+        cl = col.lower()
+        if 'case' in cl and 'id' in cl:
+            case_col = col
+        elif cl in ('concept:name', 'activity'):
+            activity_col = col
+        elif 'timestamp' in cl or 'time' in cl:
+            timestamp_col = col
+
+    if not case_col:
+        case_col = 'case:concept:name'
+    if not activity_col:
+        activity_col = 'concept:name'
+    if not timestamp_col:
+        timestamp_col = 'time:timestamp'
+
+    # Build schema: case attributes + event attributes
+    case_attrs = {}
+    event_attrs = {}
+
+    case_attrs[case_col] = CaseID
+    event_attrs[case_col] = CaseID
+    event_attrs[activity_col] = EventType
+    event_attrs[timestamp_col] = EventTime
+
+    # Add extra columns as Categorical or Continuous
+    for col in log_df.columns:
+        if col in (case_col, activity_col, timestamp_col):
+            continue
+        if col.startswith('(case)') or col.startswith('case:'):
+            if pd.api.types.is_numeric_dtype(log_df[col]):
+                case_attrs[col] = Continuous
+            else:
+                case_attrs[col] = Categorical
+        else:
+            if pd.api.types.is_numeric_dtype(log_df[col]):
+                event_attrs[col] = Continuous
+            else:
+                event_attrs[col] = Categorical
+
+    schema = EventLogSchemaTypes(cases=case_attrs, events=event_attrs)
+
+    df_cases = log_df[list(case_attrs.keys())].drop_duplicates(subset=case_col)
+    df_events = log_df[list(event_attrs.keys())]
+
+    event_log = EventLog(df_cases, df_events, schema)
+    last_uploaded_data['event_log_pa'] = event_log
+
+    # Mine atoms
+    process_id = "declarative_process"
+    api = ProcessAtoms()
+    atoms = api.mine_atoms_from_log(
+        process_id,
+        event_log,
+        considered_templates,
+        min_support=min_support,
+        local=True,
+        consider_vacuity=False,
+    )
+
+    last_uploaded_data['atoms'] = atoms
+
+    # Build atoms_df
+    records = []
+    for atom in atoms:
+        records.append({
+            "type": atom.atom_type,
+            "op_0": atom.operands[0],
+            "op_1": atom.operands[1] if len(atom.operands) > 1 else "",
+            "support": atom.support,
+            "confidence": atom.attributes.get("confidence", 0.0),
+        })
+    atoms_df = pd.DataFrame.from_records(records)
+    if len(atoms_df) > 0:
+        atoms_df = atoms_df.sort_values(by="confidence", ascending=False).reset_index(drop=True)
+    last_uploaded_data['atoms_df'] = atoms_df
+
+    # Build constraint violation matrix
+    dev_cols = []
+    for i in range(len(atoms_df)):
+        dev_cols.append(f"{atoms_df['type'][i]}_{atoms_df['op_0'][i]}_{atoms_df['op_1'][i]}")
+
+    collect_data = pd.DataFrame(data=0, index=range(len(event_log)), columns=dev_cols)
+    collect_data['case_id'] = None
+
+    for i, d in enumerate(dev_cols):
+        the_atom = None
+        for atom in atoms:
+            expected_ops = [atoms_df['op_0'][i]]
+            if atoms_df['op_1'][i]:
+                expected_ops.append(atoms_df['op_1'][i])
+            if atom.atom_type == atoms_df['type'][i] and atom.operands == expected_ops:
+                the_atom = atom
+                break
+
+        if the_atom is None:
+            continue
+
+        checker = RegexChecker(process_id, event_log)
+        activities = checker.log.unique_activities()
+        activity_map = checker._map_activities_to_letters(activities)
+        variant_frame = checker.create_variant_frame_from_log(activity_map)
+        variant_frame["sat"] = checker.compute_satisfaction(
+            the_atom, variant_frame, activity_map, consider_vacuity=False
+        )
+
+        if i == 0:
+            collect_data['case_id'] = list(
+                val for cases in variant_frame["case_ids"].values for val in cases
+            )
+
+        for j in range(len(variant_frame)):
+            for case_id in variant_frame["case_ids"][j]:
+                ids = collect_data.index[collect_data['case_id'] == case_id]
+                if variant_frame["sat"][j] == 1:
+                    collect_data.loc[ids, d] = 0
+                else:
+                    collect_data.loc[ids, d] = 1
+
+    # Compute trace duration per case
+    if timestamp_col in log_df.columns:
+        log_df[timestamp_col] = pd.to_datetime(log_df[timestamp_col])
+        durations = log_df.groupby(case_col)[timestamp_col].agg(['min', 'max'])
+        durations['duration'] = (durations['max'] - durations['min']).dt.total_seconds()
+        duration_map = durations['duration'].to_dict()
+        collect_data['trace_duration_seconds'] = collect_data['case_id'].map(duration_map).fillna(0)
+    else:
+        collect_data['trace_duration_seconds'] = 0.0
+
+    # Rename case_id → trace_id to match BPMN matrix format
+    collect_data = collect_data.rename(columns={'case_id': 'trace_id'})
+
+    # Add trace-level attributes from df_cases (all columns except case_col itself)
+    trace_attr_cols = [col for col in df_cases.columns if col != case_col]
+    df_cases_indexed = df_cases.set_index(case_col)
+    for col in trace_attr_cols:
+        attr_map = df_cases_indexed[col].to_dict()
+        collect_data[col] = collect_data['trace_id'].map(attr_map)
+
+    # Add activities column: ordered list of activity names per trace
+    if timestamp_col in log_df.columns:
+        activities_per_case = (
+            log_df.sort_values(timestamp_col)
+            .groupby(case_col)[activity_col]
+            .apply(list)
+            .to_dict()
+        )
+    else:
+        activities_per_case = log_df.groupby(case_col)[activity_col].apply(list).to_dict()
+    collect_data['activities'] = collect_data['trace_id'].map(activities_per_case)
+
+    # Reorder columns: trace_id, trace attributes, trace_duration_seconds, activities, violation columns
+    ordered_cols = (
+        ['trace_id']
+        + trace_attr_cols
+        + ['trace_duration_seconds', 'activities']
+        + dev_cols
+    )
+    collect_data = collect_data[[c for c in ordered_cols if c in collect_data.columns]]
+
+    last_uploaded_data['deviation_matrix'] = collect_data
+    last_uploaded_data['mode'] = 'declarative'
+
+    print(f"Mined {len(atoms)} constraints, matrix shape: {collect_data.shape}")
+
+    atom_summary = atoms_df.to_dict(orient="records") if len(atoms_df) > 0 else []
+
+    return jsonify({
+        "message": "Declarative constraints mined successfully",
+        "constraint_count": len(atoms),
+        "atom_summary": atom_summary
     })
 
 
@@ -163,6 +427,10 @@ def get_cached_xes_log():
 
 def get_cached_deviation_matrix():
     if last_uploaded_data["deviation_matrix"] is None:
+
+        # Declarative matrix can only be built during upload — cannot reconstruct here
+        if last_uploaded_data.get("mode") == "declarative":
+            return pd.DataFrame()
 
         print("⚙️ Building deviation matrix...")
 
@@ -198,6 +466,30 @@ def api_preview_matrix():
 
 @app.route('/api/deviation-overview', methods=['GET'])
 def deviation_overview():
+    mode = last_uploaded_data.get('mode', 'bpmn')
+
+    if mode == 'declarative':
+        atoms_df = last_uploaded_data.get('atoms_df')
+        if atoms_df is None or len(atoms_df) == 0:
+            return jsonify({"error": "No constraints mined yet"}), 400
+
+        df = last_uploaded_data.get('deviation_matrix')
+        constraints = []
+        for i in range(len(atoms_df)):
+            col_name = f"{atoms_df['type'][i]}_{atoms_df['op_0'][i]}_{atoms_df['op_1'][i]}"
+            violation_count = int(df[col_name].sum()) if df is not None and col_name in df.columns else 0
+            constraints.append({
+                "constraint": col_name,
+                "type": atoms_df['type'][i],
+                "operands": [atoms_df['op_0'][i], atoms_df['op_1'][i]],
+                "violation_count": violation_count,
+                "support": float(atoms_df['support'][i]),
+                "confidence": float(atoms_df['confidence'][i]),
+            })
+
+        return jsonify({"constraints": constraints})
+
+    # BPMN mode
     if not last_uploaded_data['alignments']:
         return jsonify({"error": "Alignments not computed yet"}), 400
 
@@ -277,7 +569,7 @@ def configure_dimensions():
     if last_uploaded_data.get("xes_log") is None:
         raise ValueError("No XES log loaded.")
 
-    if last_uploaded_data.get("bpmn_path") is None:
+    if last_uploaded_data.get("mode") == "bpmn" and last_uploaded_data.get("bpmn_path") is None:
         raise ValueError("No BPMN model loaded.")
     # ✅ get the already cached trace x deviation matrix
     df = get_cached_deviation_matrix().copy()
@@ -673,7 +965,16 @@ def preload_file(filename):
 
 @app.route('/api/model-content', methods=['GET'])
 def api_model_content():
-    """Return the uploaded model content. For BPMN: raw XML. For PNML: SVG visualization."""
+    """Return the uploaded model content. For BPMN: raw XML. For PNML: SVG. For declarative: constraint list."""
+    mode = last_uploaded_data.get('mode', 'bpmn')
+
+    if mode == 'declarative':
+        atoms_df = last_uploaded_data.get('atoms_df')
+        if atoms_df is None or len(atoms_df) == 0:
+            return jsonify({"error": "No constraints mined yet"}), 400
+        constraints = atoms_df.to_dict(orient="records")
+        return jsonify({"type": "declarative", "constraints": constraints})
+
     model_path = last_uploaded_data.get('bpmn_path')
     if not model_path:
         return jsonify({"error": "No model uploaded yet"}), 400

@@ -1,11 +1,13 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Iterator, Mapping, Union, overload
+from typing import Dict, Type
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, model_serializer, model_validator
 
-from process_atoms.models.column_types import (
+from process_mining.process_atoms.models.column_types import (
     COLUMN_TYPES,
     CaseID,
     ColumnType,
@@ -16,8 +18,8 @@ from process_atoms.models.column_types import (
 
 
 class EventLogSchemaTypes(BaseModel):
-    cases: dict[str, type[_ColumnType]]
-    events: dict[str, type[_ColumnType]]
+    cases: Dict[str, Type[_ColumnType]]
+    events: Dict[str, Type[_ColumnType]]
 
     """
     TODO: add validator that parses types from string to type using  `COLUMN_TYPES`
@@ -42,18 +44,18 @@ class EventLogSchemaTypes(BaseModel):
         return self
 
     @model_serializer
-    def ser_model(self) -> dict[str, Any]:
+    def ser_model(self) -> Dict[str, Any]:
         """
         Before serializing to JSON, turn the subtypes of `ColumnType`s into
         strings from `ColumnTypeName`.
         """
         TYPE_TO_NAME = {v: k for (k, v) in COLUMN_TYPES.items()}
-        return dict(
-            cases={col: TYPE_TO_NAME[C] for (col, C) in self.cases.items()},
-            events={col: TYPE_TO_NAME[C] for (col, C) in self.events.items()},
-        )
+        return {
+            "cases": {col: TYPE_TO_NAME[C] for (col, C) in self.cases.items()},
+            "events": {col: TYPE_TO_NAME[C] for (col, C) in self.events.items()},
+        }
 
-    def get_case_column(self, C: type[ColumnType]) -> str:
+    def get_case_column(self, C: Type[ColumnType]) -> str:
         """
         Return the name of the first case column of type `C`.
 
@@ -65,7 +67,7 @@ class EventLogSchemaTypes(BaseModel):
         else:
             raise ValueError(f"No case column type of type `{C}`")
 
-    def get_event_column(self, C: type[ColumnType]) -> str:
+    def get_event_column(self, C: Type[ColumnType]) -> str:
         """
         Return the name of the first event column of type `C`.
 
@@ -97,8 +99,10 @@ class EventLogSchema(BaseModel):
     See `ColumnType` and its subclasses for more information on possible column types.
     """
 
-    cases: dict[str, ColumnType]
-    events: dict[str, ColumnType]
+    model_config = {"arbitrary_types_allowed": True}
+
+    cases: Dict[str, _ColumnType]
+    events: Dict[str, _ColumnType]
 
     @model_validator(mode="after")
     def check_special_columns_exist(self) -> "EventLogSchema":
@@ -125,7 +129,7 @@ class EventLogSchema(BaseModel):
         }
         return cls(cases=case_cols, events=event_cols)
 
-    def get_case_column(self, C: type[ColumnType]) -> str:
+    def get_case_column(self, C: Type[ColumnType]) -> str:
         """
         Return the name of the first event column of type `C`.
 
@@ -137,7 +141,7 @@ class EventLogSchema(BaseModel):
         else:
             raise ValueError(f"No case column type of type `{C}`")
 
-    def get_event_column(self, C: type[ColumnType]) -> str:
+    def get_event_column(self, C: Type[ColumnType]) -> str:
         """
         Return the name of the first event column of type `C`.
 
@@ -177,7 +181,7 @@ class Case:
 
 
 def _get_first_column_of_type(
-    coltypes: dict[str, type[ColumnType]], C: type[ColumnType], error=False
+    coltypes: Dict[str, _ColumnType], C: Type[ColumnType], error=False
 ) -> str:
     for col, coltype in coltypes.items():
         if isinstance(coltype, C):
@@ -383,7 +387,7 @@ class EventLog:
         )
         return self._unique_activities
 
-    def activity_counts(self) -> dict[str, int]:
+    def activity_counts(self) -> Dict[str, int]:
         if self._activity_counts is not None:
             return self._activity_counts
         self._activity_counts = (
@@ -417,7 +421,7 @@ class EventLog:
         activities = self.events[self.schema.get_event_column(EventType)].to_numpy()
 
         c_unq, c_ind, c_counts = np.unique(cases, return_index=True, return_counts=True)
-        variants = dict()
+        variants = {}
 
         for i in range(len(c_ind)):
             si = c_ind[i]
@@ -439,7 +443,7 @@ class EventLog:
         timestamps = self.events[self.schema.get_event_column(EventTime)].to_numpy()
 
         c_unq, c_ind, c_counts = np.unique(cases, return_index=True, return_counts=True)
-        variants = dict()
+        variants = {}
 
         for i in range(len(c_ind)):
             si = c_ind[i]
@@ -549,7 +553,7 @@ class _EventLogIterator(Iterator):
             raise StopIteration
 
 
-def split_on_case_attribute(self, attribute: str) -> dict[str, EventLog]:
+def split_on_case_attribute(self, attribute: str) -> Dict[str, EventLog]:
     """
     Split the event log on a case attribute.
 

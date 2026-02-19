@@ -1,6 +1,6 @@
-from process_atoms.constants import USELESS_LABELS
-from process_atoms.mine.conversion import bpmnjsonanalyzer as bpmn_analyzer
-from process_atoms.models.petri import (
+from process_mining.process_atoms.constants import USELESS_LABELS
+from process_mining.process_atoms.mine.conversion import bpmnjsonanalyzer as bpmn_analyzer
+from process_mining.process_atoms.models.petri import (
     Marking,
     PetriNet,
     Place,

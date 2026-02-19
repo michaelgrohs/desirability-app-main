@@ -3,15 +3,15 @@ import re
 
 from tqdm import tqdm
 
-from process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
-from process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
-from process_atoms.mine.bpmnconstraints.utils.constants import (
+from process_mining.process_atoms.mine.bpmnconstraints.compiler.bpmn_compiler import Compiler
+from process_mining.process_atoms.mine.bpmnconstraints.parser.bpmn_parser import Parser
+from process_mining.process_atoms.mine.bpmnconstraints.utils.constants import (
     DECLARE_CONSTRAINT_REGEX_PATTERN,
     DECLARE_GATEWAYS,
     DISCARDED_CONSTRAINTS,
 )
-from process_atoms.mine.bpmnconstraints.utils.plot import Plot
-from process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
+from process_mining.process_atoms.mine.bpmnconstraints.utils.plot import Plot
+from process_mining.process_atoms.mine.bpmnconstraints.utils.script_utils import Setup
 
 
 class ComparisonScript:

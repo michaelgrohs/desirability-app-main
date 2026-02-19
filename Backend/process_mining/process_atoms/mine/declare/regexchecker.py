@@ -1,23 +1,23 @@
+from __future__ import annotations
 import string
 from typing import List
 from uuid import uuid4
-
-import re2 as re
+import re
 from pandas import DataFrame
 from tqdm import tqdm
 
-from process_atoms.mine.declare.declare import Declare
-from process_atoms.mine.declare.enums.mp_constants import (
+from process_mining.process_atoms.mine.declare.declare import Declare
+from process_mining.process_atoms.mine.declare.enums.mp_constants import (
     Template,
     activation_based_on,
     binary_strings,
     supports_cardinality,
     unary_strings,
 )
-from process_atoms.models.event_log import EventLog
-from process_atoms.models.processatom import ProcessAtom
-from process_atoms.models.violation import Violation
-from process_atoms.signalquerybuilder import SignalQueryBuilder
+from process_mining.process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.models.violation import Violation
+from process_mining.process_atoms.signalquerybuilder import SignalQueryBuilder
 
 time_factors = {
     "s": 1 * 10**9,
@@ -35,6 +35,7 @@ regex_representations = {
     Template.EXACTLY.templ_str: "^[^a]*(a[^a]*)+[^a]*$",
     Template.INIT.templ_str: "^a.*$",
     Template.END.templ_str: "^.*a$",
+    Template.CHOICE.templ_str: "^[^ab]*(a|b).*$",
     Template.EXCLUSIVE_CHOICE.templ_str: "^[^ab]*((a[^b]*)|(b[^a]*))?$",
     Template.RESPONDED_EXISTENCE.templ_str: "^[^a]*((a.*b.*)|(b.*a.*))*[^a]*$",
     Template.RESPONSE.templ_str: "^[^a]*(a.*b)*[^a]*$",
@@ -49,6 +50,13 @@ regex_representations = {
     Template.CO_EXISTENCE.templ_str: "^[^ab]*((a.*b.*)|(b.*a.*))*[^ab]*$",
     Template.NOT_SUCCESSION.templ_str: "^[^a]*(a[^b]*)*[^ab]*$",
     Template.NOT_CO_EXISTENCE.templ_str: "^[^ab]*((a[^b]*)|(b[^a]*))?$",
+    Template.NOT_RESPONDED_EXISTENCE.templ_str: "^[^ab]*((a[^b]*)|(b[^a]*))?$",
+    Template.NOT_RESPONSE.templ_str: "^[^a]*(a[^b]*)*[^ab]*$",
+    Template.NOT_CHAIN_RESPONSE.templ_str: "^([^a]|a[^b])*$",
+    Template.NOT_PRECEDENCE.templ_str: "^[^b]*(b[^a]*)*[^ab]*$",
+    Template.NOT_CHAIN_PRECEDENCE.templ_str: "^([^a]|a[^b])*$",
+    Template.NOT_ALTERNATE_SUCCESSION.templ_str: "^[^a]*(a[^b]*)*[^ab]*$",
+    Template.NOT_CHAIN_SUCCESSION.templ_str: "^([^a]|a[^b])*$",
 }
 
 

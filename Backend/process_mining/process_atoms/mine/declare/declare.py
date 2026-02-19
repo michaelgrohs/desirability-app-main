@@ -11,14 +11,14 @@ from mlxtend.frequent_patterns import apriori, fpgrowth
 from mlxtend.preprocessing import TransactionEncoder
 from tqdm import tqdm
 
-from process_atoms.mine.declare.enums.mp_constants import Template, TraceState
-from process_atoms.mine.declare.functions import (
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template, TraceState
+from process_mining.process_atoms.mine.declare.functions import (
     check_trace_conformance,
     discover_constraint,
     query_constraint,
 )
-from process_atoms.mine.declare.models.checker_result import CheckerResult
-from process_atoms.models.event_log import EventLog
+from process_mining.process_atoms.mine.declare.models.checker_result import CheckerResult
+from process_mining.process_atoms.models.event_log import EventLog
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 

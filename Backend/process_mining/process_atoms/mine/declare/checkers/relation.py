@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from process_atoms.mine.declare.enums.mp_constants import TraceState
-from process_atoms.mine.declare.models.checker_result import CheckerResult
-from process_atoms.mine.declare.parsers.decl_parser import (
+from process_mining.process_atoms.mine.declare.enums.mp_constants import TraceState
+from process_mining.process_atoms.mine.declare.models.checker_result import CheckerResult
+from process_mining.process_atoms.mine.declare.parsers.decl_parser import (
     parse_data_cond,
     parse_time_cond,
 )

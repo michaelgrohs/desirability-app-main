@@ -1,6 +1,8 @@
+from __future__ import annotations
+from typing import Dict, List
 from pydantic import BaseModel, computed_field
 
-from process_atoms.mine.declare.enums.mp_constants import Template
+from process_mining.process_atoms.mine.declare.enums.mp_constants import Template
 
 nat_lang_templates = {
     Template.ABSENCE.templ_str: "{1} does not occur more than {n} times",
@@ -43,13 +45,13 @@ class ProcessAtom(BaseModel):
     arity: int
     cardinality: int
     level: str
-    operands: list[str]
+    operands: List[str]
     support: float
     provision_type: str
-    providers: list[str]
-    activation_conditions: list[str]
-    target_conditions: list[str]
-    attributes: dict
+    providers: List[str]
+    activation_conditions: List[str]
+    target_conditions: List[str]
+    attributes: Dict
 
     @computed_field
     @property

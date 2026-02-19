@@ -4,13 +4,13 @@ from typing import List
 
 import pandas as pd
 
-from process_atoms.constants import USELESS_LABELS, XES_NAME
-from process_atoms.mine.declare.enums.mp_constants import (
+from process_mining.process_atoms.constants import USELESS_LABELS, XES_NAME
+from process_mining.process_atoms.mine.declare.enums.mp_constants import (
     Template,
     directed_strings,
     subsumption_hierarchy,
 )
-from process_atoms.models.processatom import ProcessAtom
+from process_mining.process_atoms.models.processatom import ProcessAtom
 
 
 def create_variant_log(log, activity_key=XES_NAME):

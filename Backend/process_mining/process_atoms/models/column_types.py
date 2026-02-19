@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Union
+from typing_extensions import Annotated, Literal, Union
 
 import numpy as np
 import pandas as pd
