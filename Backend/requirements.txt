@@ -1,8 +1,0 @@
-flask
-flask-cors
-pm4py
-lxml
-dowhy
-xmltodict
-mlxtend
-pydantic
