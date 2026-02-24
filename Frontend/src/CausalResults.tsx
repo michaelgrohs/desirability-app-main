@@ -318,9 +318,9 @@ const CausalResults: React.FC = () => {
       </Box>
 
       <Box display="flex" alignItems="center" mb={1}>
-        <Typography variant="h5">Average Treatment Effects (ATE)</Typography>
+        <Typography variant="h5">Conditional Average Treatment Effects (CATE)</Typography>
         <Tooltip
-          title="Each cell shows the Average Treatment Effect (ATE) of a deviation on a process dimension, with the p-value in parentheses. For binary dimensions (outcome, compliance, quality), the ATE represents the change in probability of a positive outcome. For continuous dimensions (time, costs), the ATE is the average unit change. Hover over any cell for a plain-language interpretation. Use the criticality configurator below to assign qualitative labels to ATE ranges."
+          title="Each cell shows the Conditional Average Treatment Effect (CATE) of a deviation on a process dimension, with the p-value in parentheses. For binary dimensions (outcome, compliance, quality), the CATE represents the change in probability of a positive outcome. For continuous dimensions (time, costs), the CATE is the average unit change. Hover over any cell for a plain-language interpretation. Use the criticality configurator below to assign qualitative labels to CATE ranges."
           arrow
           placement="right"
         >
@@ -328,6 +328,53 @@ const CausalResults: React.FC = () => {
             <InfoIcon fontSize="small" color="action" />
           </IconButton>
         </Tooltip>
+      </Box>
+
+      {/* CATE intuition explanation */}
+      <Box sx={{ backgroundColor: "grey.50", border: "1px solid", borderColor: "grey.200", borderRadius: 2, p: 2, mb: 3 }}>
+        <Typography variant="body2" gutterBottom>
+          A <strong>CATE</strong> (Conditional Average Treatment Effect) measures the estimated causal impact of a deviation on a process dimension, compared to cases without that deviation. For example, a CATE of <strong>−12.5</strong> for the <em>time</em> dimension means that cases where this deviation occurred were on average <strong>12.5 time units (e.g., seconds) shorter</strong>.
+            A CATE of <strong>−0.30</strong> for a binary dimension like <em>outcome</em> means the probability of a positive outcome was on average <strong>30% lower</strong> in affected cases.
+        </Typography>
+        <Typography variant="body2" gutterBottom sx={{ mt: 1 }}>
+          The <strong>p-value</strong> (in parentheses) indicates statistical significance: a smaller p-value means the estimated effect is less likely to be due to chance. A common threshold is p &lt; 0.05.
+        </Typography>
+
+        {/* Annotated example cell */}
+        <Box sx={{ mt: 2, display: "flex", alignItems: "center", gap: 2, flexWrap: "wrap" }}>
+          <Box
+            sx={{
+              backgroundColor: "rgba(211,47,47,0.35)",
+              border: "2px solid rgba(211,47,47,0.7)",
+              borderRadius: 1,
+              px: 2,
+              py: 1,
+              textAlign: "center",
+              minWidth: 110,
+            }}
+          >
+            <Typography variant="body2" sx={{ fontWeight: "bold" }}>
+              −0.30{" "}
+              <Typography component="span" variant="caption">
+                (0.021)
+              </Typography>
+            </Typography>
+          </Box>
+          <Box>
+            <Typography variant="caption" color="text.secondary">
+              <strong>−0.30</strong> = CATE: the deviation reduces the dimension by 0.30 units on average
+              (or −30%ok, make the toolt for binary dimensions)
+            </Typography>
+            <br />
+            <Typography variant="caption" color="text.secondary">
+              <strong>(0.021)</strong> = p-value: statistically significant at the 5% level (p &lt; 0.05)
+            </Typography>
+            <br />
+            <Typography variant="caption" color="text.secondary">
+              Cell color: <span style={{ color: "rgba(211,47,47,0.9)" }}>red = negative impact</span>, <span style={{ color: "rgba(76,175,80,0.9)" }}>green = positive impact</span>; intensity reflects effect size.
+            </Typography>
+          </Box>
+        </Box>
       </Box>
 
       <Divider sx={{ my: 3 }} />

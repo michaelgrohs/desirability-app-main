@@ -188,7 +188,10 @@ const WelcomePage: React.FC = () => {
           Conformance Analysis
         </Typography>
         <Tooltip
-          title="Upload your event log and process model to begin conformance analysis. In BPMN Alignment mode, each trace is aligned against the process model — deviations appear as skipped activities (expected by the model but absent in the log) or inserted activities (present in the log but not the model). In Declarative mode, behavioral constraints are automatically mined from the log using DECLARE templates; select which constraint types to consider and a minimum support threshold."
+          title="Upload your event log and (optionally) process model to begin conformance analysis.
+          You have two options to continue:
+          1. Trace Alignment mode: Upload a process model and an event log. Deviations are idenfieid by aligning each trace to the process model — deviations appear as skipped activities (expected by the model but absent in the log) or inserted activities (present in the log but not the model).
+          2. Declarative Conformance Checking mode: Upload an event log only. A declarative model, i.e., behavioral constraints, are automatically mined from the log using DECLARE templates; select which constraint types to consider and a minimum support threshold. Deviations are violations of the mined constraints."
           arrow
           placement="right"
         >
@@ -207,8 +210,8 @@ const WelcomePage: React.FC = () => {
           fullWidth
           sx={{ mb: 1 }}
         >
-          <ToggleButton value="bpmn">BPMN Alignment</ToggleButton>
-          <ToggleButton value="declarative">Mine Declarative Model</ToggleButton>
+          <ToggleButton value="bpmn">Trace Alignment</ToggleButton>
+          <ToggleButton value="declarative">Declarative Conformance Checking</ToggleButton>
         </ToggleButtonGroup>
 
         {/* BPMN mode: process model upload */}

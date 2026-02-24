@@ -121,6 +121,10 @@ setUniqueSequences: React.Dispatch<React.SetStateAction<UniqueSequenceBin[]>>;
   traceSequences: TraceSequence[];
 setTraceSequences: React.Dispatch<React.SetStateAction<TraceSequence[]>>;
 
+  // Persisted dimension configuration from SelectDimensions
+  dimensionConfigs: Record<string, any>;
+  setDimensionConfigs: React.Dispatch<React.SetStateAction<Record<string, any>>>;
+
   // Reset everything
   resetAll: () => void;
 
@@ -148,6 +152,7 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
   });
   const [uniqueSequences, setUniqueSequences] = useState<UniqueSequenceBin[]>([]);
   const [amountConformanceData, setAmountConformanceData] = useState<any[]>([]);
+  const [dimensionConfigs, setDimensionConfigs] = useState<Record<string, any>>({});
 
 
 
@@ -174,6 +179,7 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
     setDesiredOutcomes([]);
     setmatching_mode('');
     setAttributeConformance({});
+    setDimensionConfigs({});
   };
 
   return (
@@ -211,6 +217,8 @@ selectedDeviations,
   setSelectedDeviations,
   selectedDimensions,
   setSelectedDimensions,
+  dimensionConfigs,
+  setDimensionConfigs,
   resetAll,
 
       }}

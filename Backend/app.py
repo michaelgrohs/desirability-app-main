@@ -552,11 +552,9 @@ def get_current_impact_matrix():
     else:
         df = get_cached_deviation_matrix()
 
-    preview_df = df.head(200)
-
     return jsonify({
-        "columns": list(preview_df.columns),
-        "rows": preview_df.to_dict(orient="records"),
+        "columns": list(df.columns),
+        "rows": df.to_dict(orient="records"),
         "total_rows": df.shape[0],
         "total_columns": df.shape[1]
     })
