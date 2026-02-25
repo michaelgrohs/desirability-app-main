@@ -10,6 +10,7 @@ import CausalResults from "./CausalResults";
 import CriticalityResults from "./CriticalityResults";
 import ViolationGuidelines from "./ViolationGuidelines";
 import ActivityStats from "./ActivityStats";
+import Recommendations from "./Recommendations";
 
 const App: React.FC = () => {
   return (
@@ -26,6 +27,7 @@ const App: React.FC = () => {
             <Route path="/select-dimensions" element={<SelectDimensions />} />
             <Route path="/causal-results" element={<CausalResults />} />
             <Route path="/criticality-results" element={<CriticalityResults />} />
+            <Route path="/recommendations" element={<Recommendations />} />
           </Route>
         </Routes>
       </Router>

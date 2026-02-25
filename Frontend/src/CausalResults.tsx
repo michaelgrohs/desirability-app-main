@@ -210,19 +210,29 @@ const CausalResults: React.FC = () => {
 
   const maxAbsEffect = getMaxAbsEffect(results);
 
-  const dimensions = Array.from(new Set(results.map((r) => r.dimension)));
-  const deviations = Array.from(new Set(results.map((r) => r.deviation)));
+  const dimensions = React.useMemo(
+    () => Array.from(new Set(results.map((r) => r.dimension))),
+    [results]
+  );
+  const deviations = React.useMemo(
+    () => Array.from(new Set(results.map((r) => r.deviation))),
+    [results]
+  );
 
   // default selected levels = all, ordered
   useEffect(() => {
     if (!dimensions.length) return;
 
     setSelectedLevels((prev) => {
+      let changed = false;
       const updated = { ...prev };
       dimensions.forEach((dim) => {
-        if (!updated[dim]) updated[dim] = [...LEVEL_ORDER];
+        if (!updated[dim]) {
+          updated[dim] = [...LEVEL_ORDER];
+          changed = true;
+        }
       });
-      return updated;
+      return changed ? updated : prev;
     });
   }, [dimensions]);
 

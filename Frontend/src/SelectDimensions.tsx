@@ -86,7 +86,7 @@ const SelectDimensions: React.FC = () => {
           setMatrixRows(data.rows ?? []);
         })
         .catch(() => {});
-    }, [selectedDeviations, selectedDimensions]);
+    }, []);
 
   // ---------------------------
   // Toggle dimension selection
@@ -192,7 +192,7 @@ const SelectDimensions: React.FC = () => {
     });
     return () => setContinue(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDimensions, selectedDeviations, isComputing, setContinue]);
+  }, [selectedDimensions, selectedDeviations, isComputing, configs, setContinue]);
 
   // ---------------------------
   // Column type helpers (for rule mode)
@@ -695,7 +695,7 @@ const SelectDimensions: React.FC = () => {
               )}
             </thead>
             <tbody>
-              {matrixRows.map((row, i) => (
+              {matrixRows.slice(0, 200).map((row, i) => (
                 <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
                   {orderedCols.map(col => {
                     const isDimCol = DIMENSION_NAMES.has(col);
@@ -728,6 +728,11 @@ const SelectDimensions: React.FC = () => {
             </tbody>
           </table>
         </Box>
+        {matrixRows.length > 200 && (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+            Showing first 200 of {matrixRows.length} rows.
+          </Typography>
+        )}
 
     </Box>
   );

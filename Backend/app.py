@@ -1,8 +1,17 @@
 # app.py
+import multiprocessing
+try:
+    multiprocessing.set_start_method('fork', force=True)
+except RuntimeError:
+    pass
+
 import platform
 import sys
 print("PYTHON EXECUTABLE:", sys.executable)
 print("ARCH:", platform.machine())
+
+import networkx
+print("networkx version:", networkx.__version__)
 
 print(">>> BEFORE pm4py import")
 import pm4py
@@ -68,6 +77,7 @@ last_uploaded_files = {
 last_uploaded_data = {
     "bpmn_path": None,
     "xes_path": None,
+    "decl_path": None,
     "bpmn_model": None,
     "xes_log": None,
     "alignments": None,
@@ -78,6 +88,7 @@ last_uploaded_data = {
     "atoms": None,
     "atoms_df": None,
     "event_log_pa": None,
+    "decl_constraint_info": None,
 }
 
 def reset_cache():
@@ -90,6 +101,8 @@ def reset_cache():
     last_uploaded_data["atoms"] = None
     last_uploaded_data["atoms_df"] = None
     last_uploaded_data["event_log_pa"] = None
+    last_uploaded_data["decl_path"] = None
+    last_uploaded_data["decl_constraint_info"] = None
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
@@ -407,6 +420,156 @@ def upload_declarative():
     })
 
 
+@app.route('/upload-declarative-model', methods=['POST'])
+def upload_declarative_model():
+    import re
+    from Declare4Py.ProcessModels.DeclareModel import DeclareModel
+    from Declare4Py.D4PyEventLog import D4PyEventLog
+    from Declare4Py.ProcessMiningTasks.ConformanceChecking.MPDeclareAnalyzer import MPDeclareAnalyzer
+
+    print("\n==== UPLOAD DECLARATIVE MODEL CALLED ====")
+
+    xes_file = request.files.get('xes')
+    decl_file = request.files.get('decl')
+
+    if not xes_file or not xes_file.filename:
+        return jsonify({"error": "Missing event log file"}), 400
+    if not decl_file or not decl_file.filename:
+        return jsonify({"error": "Missing .decl model file"}), 400
+
+    upload_folder = "uploads"
+    os.makedirs(upload_folder, exist_ok=True)
+
+    xes_path = os.path.join(upload_folder, xes_file.filename)
+    decl_path = os.path.join(upload_folder, decl_file.filename)
+
+    xes_file.save(xes_path)
+    decl_file.save(decl_path)
+
+    # Reset cache
+    last_uploaded_data['xes_path'] = xes_path
+    last_uploaded_data['decl_path'] = decl_path
+    last_uploaded_data['bpmn_path'] = None
+    last_uploaded_data['bpmn_model'] = None
+    last_uploaded_data['alignments'] = None
+    last_uploaded_data['deviation_matrix'] = None
+    last_uploaded_data['impact_matrix'] = None
+    last_uploaded_data['atoms'] = None
+    last_uploaded_data['atoms_df'] = None
+    last_uploaded_data['event_log_pa'] = None
+    last_uploaded_data['decl_constraint_info'] = None
+
+    # Parse log with pm4py for downstream compatibility
+    _, ext = os.path.splitext(xes_path)
+    if xes_path.endswith('.xes.gz') or ext == '.xes':
+        xes_log = xes_importer.apply(xes_path)
+    elif ext == '.csv':
+        log_csv = pd.read_csv(xes_path, encoding='utf-8-sig')
+        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], utc=True)
+        xes_log = log_converter.apply(log_csv)
+    else:
+        return jsonify({"error": "Unsupported log format"}), 400
+
+    last_uploaded_data['xes_log'] = xes_log
+    log_df = pm4py.convert_to_dataframe(xes_log)
+
+    case_col = 'case:concept:name'
+    activity_col = 'concept:name'
+    timestamp_col = 'time:timestamp'
+
+    # Ordered case IDs from pm4py log
+    case_ids_ordered = list(dict.fromkeys(log_df[case_col].tolist()))
+
+    # Parse with Declare4Py
+    d4py_log = D4PyEventLog(case_name=case_col)
+    d4py_log.parse_xes_log(xes_path)
+
+    declare_model = DeclareModel().parse_from_file(decl_path)
+    model_constraints = declare_model.get_decl_model_constraints()
+
+    # Run conformance check
+    basic_checker = MPDeclareAnalyzer(log=d4py_log, declare_model=declare_model, consider_vacuity=False)
+    conf_check_res = basic_checker.run()
+
+    # Get violation counts: rows = traces, columns = constraints
+    violations_df = conf_check_res.get_metric(metric="num_violations")
+    constraint_cols = list(violations_df.columns)
+
+    # Build binary violation matrix aligned to case_ids_ordered
+    violations_binary = (violations_df > 0).astype(int)
+
+    if set(violations_df.index).issubset(set(case_ids_ordered)):
+        # Index is case IDs — reindex to our ordered list
+        violations_binary = violations_binary.reindex(case_ids_ordered).fillna(0).astype(int)
+        violations_binary.index = case_ids_ordered
+    else:
+        # Index is numeric — align positionally
+        n = min(len(violations_binary), len(case_ids_ordered))
+        violations_binary = violations_binary.iloc[:n].copy()
+        violations_binary.index = case_ids_ordered[:n]
+        # Pad if needed
+        if n < len(case_ids_ordered):
+            pad = pd.DataFrame(0, index=case_ids_ordered[n:], columns=constraint_cols)
+            violations_binary = pd.concat([violations_binary, pad])
+
+    violations_binary.index.name = 'trace_id'
+    collect_data = violations_binary.reset_index()
+
+    # Add trace duration
+    if timestamp_col in log_df.columns:
+        log_df[timestamp_col] = pd.to_datetime(log_df[timestamp_col])
+        durations = log_df.groupby(case_col)[timestamp_col].agg(['min', 'max'])
+        durations['duration'] = (durations['max'] - durations['min']).dt.total_seconds()
+        duration_map = durations['duration'].to_dict()
+        collect_data['trace_duration_seconds'] = collect_data['trace_id'].map(duration_map).fillna(0)
+    else:
+        collect_data['trace_duration_seconds'] = 0.0
+
+    # Add activities
+    if timestamp_col in log_df.columns:
+        activities_per_case = (
+            log_df.sort_values(timestamp_col)
+            .groupby(case_col)[activity_col]
+            .apply(list)
+            .to_dict()
+        )
+    else:
+        activities_per_case = log_df.groupby(case_col)[activity_col].apply(list).to_dict()
+    collect_data['activities'] = collect_data['trace_id'].map(activities_per_case)
+
+    # Reorder columns
+    ordered_cols = ['trace_id', 'trace_duration_seconds', 'activities'] + constraint_cols
+    collect_data = collect_data[[c for c in ordered_cols if c in collect_data.columns]]
+
+    last_uploaded_data['deviation_matrix'] = collect_data
+    last_uploaded_data['mode'] = 'declarative-model'
+
+    # Store parsed constraint info for API responses
+    decl_constraint_info = []
+    for col in constraint_cols:
+        m = re.match(r'^([^\[]+)\[([^\]]*)\]', str(col).strip())
+        if m:
+            ctype = m.group(1).strip()
+            ops = [op.strip() for op in m.group(2).split(',') if op.strip()]
+        else:
+            ctype = str(col)
+            ops = []
+        decl_constraint_info.append({
+            'col_name': col,
+            'type': ctype,
+            'operands': ops,
+        })
+    last_uploaded_data['decl_constraint_info'] = decl_constraint_info
+
+    print(f"Uploaded .decl model: {len(model_constraints)} constraints, {len(case_ids_ordered)} traces, matrix shape: {collect_data.shape}")
+
+    return jsonify({
+        "message": "Declarative model conformance check completed",
+        "constraint_count": len(model_constraints),
+        "trace_count": len(case_ids_ordered),
+    })
+
+
 def get_cached_impact_matrix():
     return last_uploaded_data.get("impact_matrix")
 
@@ -428,8 +591,8 @@ def get_cached_xes_log():
 def get_cached_deviation_matrix():
     if last_uploaded_data["deviation_matrix"] is None:
 
-        # Declarative matrix can only be built during upload — cannot reconstruct here
-        if last_uploaded_data.get("mode") == "declarative":
+        # Declarative matrices can only be built during upload — cannot reconstruct here
+        if last_uploaded_data.get("mode") in ("declarative", "declarative-model"):
             return pd.DataFrame()
 
         print("⚙️ Building deviation matrix...")
@@ -467,6 +630,25 @@ def api_preview_matrix():
 @app.route('/api/deviation-overview', methods=['GET'])
 def deviation_overview():
     mode = last_uploaded_data.get('mode', 'bpmn')
+
+    if mode == 'declarative-model':
+        decl_constraint_info = last_uploaded_data.get('decl_constraint_info', [])
+        if not decl_constraint_info:
+            return jsonify({"error": "No .decl model loaded yet"}), 400
+        df = last_uploaded_data.get('deviation_matrix')
+        constraints = []
+        for info in decl_constraint_info:
+            col_name = info['col_name']
+            violation_count = int(df[col_name].sum()) if df is not None and col_name in df.columns else 0
+            constraints.append({
+                "constraint": col_name,
+                "type": info['type'],
+                "operands": info['operands'],
+                "violation_count": violation_count,
+                "support": 1.0,
+                "confidence": 1.0,
+            })
+        return jsonify({"constraints": constraints})
 
     if mode == 'declarative':
         atoms_df = last_uploaded_data.get('atoms_df')
@@ -579,7 +761,10 @@ def configure_dimensions():
         config = dim["config"]
 
         if comp_type == "existing":
-            column = config["column"]
+            column = config.get("column")
+
+            if not column:
+                return jsonify({"error": f"No column selected for dimension '{dimension}'"}), 400
 
             if column not in df.columns:
                 return jsonify({"error": f"Column '{column}' not found"}), 400
@@ -790,7 +975,7 @@ def compute_causal_effects():
                     "dimension": dim,
                     "error": str(e)
                 })
-
+    print(results)
     last_uploaded_data["causal_results"] = results
     if not results:
         return jsonify({
@@ -966,6 +1151,22 @@ def api_model_content():
     """Return the uploaded model content. For BPMN: raw XML. For PNML: SVG. For declarative: constraint list."""
     mode = last_uploaded_data.get('mode', 'bpmn')
 
+    if mode == 'declarative-model':
+        decl_constraint_info = last_uploaded_data.get('decl_constraint_info', [])
+        if not decl_constraint_info:
+            return jsonify({"error": "No .decl model loaded yet"}), 400
+        constraints_out = [
+            {
+                "type": c['type'],
+                "op_0": c['operands'][0] if c['operands'] else "",
+                "op_1": c['operands'][1] if len(c['operands']) > 1 else "",
+                "support": 1.0,
+                "confidence": 1.0,
+            }
+            for c in decl_constraint_info
+        ]
+        return jsonify({"type": "declarative-model", "constraints": constraints_out})
+
     if mode == 'declarative':
         atoms_df = last_uploaded_data.get('atoms_df')
         if atoms_df is None or len(atoms_df) == 0:
@@ -997,5 +1198,5 @@ def api_model_content():
 
 if __name__ == '__main__':
     print("🚀 Flask backend running at: http://localhost:1904")
-    app.run(host="0.0.0.0", port=1904, debug=True)
+    app.run(host="0.0.0.0", port=1904, debug=True, use_reloader=False, threaded=True)
     reset_cache()

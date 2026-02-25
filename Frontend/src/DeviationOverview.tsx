@@ -90,7 +90,7 @@ const DeviationOverview: React.FC = () => {
   const [previewRows, setPreviewRows] = useState<any[]>([]);
 
   // Model viewer state
-  const [modelType, setModelType] = useState<'bpmn' | 'pnml' | 'declarative' | null>(null);
+  const [modelType, setModelType] = useState<'bpmn' | 'pnml' | 'declarative' | 'declarative-model' | null>(null);
   const [modelContent, setModelContent] = useState<string | null>(null);
   const [modelConstraints, setModelConstraints] = useState<any[]>([]);
   const bpmnContainerRef = useRef<HTMLDivElement | null>(null);
@@ -111,7 +111,7 @@ const DeviationOverview: React.FC = () => {
       .then(res => res.json())
       .then(data => {
         setModelType(data.type);
-        if (data.type === 'declarative') {
+        if (data.type === 'declarative' || data.type === 'declarative-model') {
           setModelConstraints(data.constraints || []);
           setModelContent(null);
         } else {
@@ -164,7 +164,7 @@ const DeviationOverview: React.FC = () => {
         return json;
       })
       .then((json) => {
-        if (conformanceMode === 'declarative') {
+        if (conformanceMode === 'declarative' || conformanceMode === 'declarative-model') {
           setDeclarativeData(json);
         } else {
           setData(json);
@@ -470,6 +470,8 @@ const DeviationOverview: React.FC = () => {
         <Tooltip
           title={conformanceMode === 'declarative'
             ? "This page shows constraints mined from your event log that are violated by at least some traces. Each bar indicates how often the constraint is violated. Select the constraints you want to investigate — only selected deviations will be analyzed in the following steps."
+            : conformanceMode === 'declarative-model'
+            ? "This page shows violations detected against your uploaded .decl model. Each bar indicates how many traces violate that constraint. Select the constraints you want to investigate — only selected deviations will be analyzed in the following steps."
             : "This page shows deviations detected between your event log and the process model. Skipped activities (model moves) were expected by the model but did not occur. Inserted activities (log moves) occurred in the log at a positon in which they are not intended by the model. The bar indicates frequency. Select the deviations you want to investigate — only selected deviations will be analyzed in the following steps."
           }
           arrow
@@ -515,10 +517,12 @@ const DeviationOverview: React.FC = () => {
       )}
 
       {/* MODEL VIEWER — Declarative mode: constraint summary table */}
-      {conformanceMode === 'declarative' && modelConstraints.length > 0 && (
+      {(conformanceMode === 'declarative' || conformanceMode === 'declarative-model') && modelConstraints.length > 0 && (
         <Paper sx={{ mb: 4, p: 2 }}>
           <Typography variant="h6" gutterBottom>
-            Mined Declarative Model ({modelConstraints.length.toLocaleString()} constraints)
+            {conformanceMode === 'declarative-model'
+              ? `Uploaded Declarative Model (${modelConstraints.length.toLocaleString()} constraints)`
+              : `Mined Declarative Model (${modelConstraints.length.toLocaleString()} constraints)`}
           </Typography>
           <Box sx={{ overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
             <Table size="small">
@@ -588,8 +592,8 @@ const DeviationOverview: React.FC = () => {
         </>
       )}
 
-      {/* Declarative mode: constraint list */}
-      {!loading && !error && conformanceMode === 'declarative' && declarativeData && (
+      {/* Declarative mode: constraint list (mined or uploaded model) */}
+      {!loading && !error && (conformanceMode === 'declarative' || conformanceMode === 'declarative-model') && declarativeData && (
         <>
           {renderConstraintList(declarativeData.constraints)}
           {renderMatrixPreview()}

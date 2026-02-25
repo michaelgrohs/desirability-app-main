@@ -26,8 +26,10 @@ const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:5000";
 
 const WelcomePage: React.FC = () => {
   const [mode, setMode] = useState<ConformanceMode>('bpmn');
+  const [declSubMode, setDeclSubMode] = useState<'mine' | 'upload'>('mine');
   const [bpmnFile, setBpmnFile] = useState<File | null>(null);
   const [xesFile, setXesFile] = useState<File | null>(null);
+  const [declFile, setDeclFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -84,6 +86,14 @@ const WelcomePage: React.FC = () => {
     }
   };
 
+  const handleDeclSubModeChange = (_: React.MouseEvent<HTMLElement>, newSub: 'mine' | 'upload' | null) => {
+    if (newSub) {
+      setDeclSubMode(newSub);
+      setIsReady(false);
+      setErrorMsg(null);
+    }
+  };
+
   const handleTemplateToggle = (template: string) => {
     setSelectedTemplates(prev =>
       prev.includes(template)
@@ -105,6 +115,8 @@ const WelcomePage: React.FC = () => {
   const handleUpload = async () => {
     if (mode === 'bpmn') {
       if (!bpmnFile || !xesFile) return;
+    } else if (declSubMode === 'upload') {
+      if (!xesFile || !declFile) return;
     } else {
       if (!xesFile) return;
     }
@@ -144,8 +156,31 @@ const WelcomePage: React.FC = () => {
           if (data.traceback) console.error("Backend traceback:\n", data.traceback);
           setErrorMsg(msg);
         }
+      } else if (mode === 'declarative' && declSubMode === 'upload') {
+        // Declarative model upload mode
+        const formData = new FormData();
+        formData.append('xes', xesFile!);
+        formData.append('decl', declFile!);
+
+        const response = await fetch(`${API_URL}/upload-declarative-model`, {
+          method: "POST",
+          body: formData,
+        });
+
+        const data = await response.json();
+        console.log("Declarative model upload response:", data);
+
+        if (response.ok) {
+          setConformanceMode('declarative-model');
+          setIsReady(true);
+        } else {
+          const msg = data.error || "Upload failed";
+          console.error("Upload failed:", msg);
+          if (data.traceback) console.error("Backend traceback:\n", data.traceback);
+          setErrorMsg(msg);
+        }
       } else {
-        // Declarative mode
+        // Declarative mine-from-log mode
         const formData = new FormData();
         formData.append('xes', xesFile!);
         formData.append('templates', JSON.stringify(selectedTemplates));
@@ -179,7 +214,9 @@ const WelcomePage: React.FC = () => {
 
   const canUpload = mode === 'bpmn'
     ? (!!bpmnFile && !!xesFile && !isProcessing)
-    : (!!xesFile && selectedTemplates.length > 0 && !isProcessing);
+    : mode === 'declarative' && declSubMode === 'upload'
+      ? (!!xesFile && !!declFile && !isProcessing)
+      : (!!xesFile && selectedTemplates.length > 0 && !isProcessing);
 
   return (
     <Box sx={{ maxWidth: 800, margin: '0 auto', textAlign: 'center', p: 4 }}>
@@ -189,9 +226,10 @@ const WelcomePage: React.FC = () => {
         </Typography>
         <Tooltip
           title="Upload your event log and (optionally) process model to begin conformance analysis.
-          You have two options to continue:
-          1. Trace Alignment mode: Upload a process model and an event log. Deviations are idenfieid by aligning each trace to the process model — deviations appear as skipped activities (expected by the model but absent in the log) or inserted activities (present in the log but not the model).
-          2. Declarative Conformance Checking mode: Upload an event log only. A declarative model, i.e., behavioral constraints, are automatically mined from the log using DECLARE templates; select which constraint types to consider and a minimum support threshold. Deviations are violations of the mined constraints."
+          You have three options:
+          1. Trace Alignment: Upload a BPMN/PNML process model and an event log. Deviations are identified by aligning each trace to the model — skipped activities (expected but absent) or inserted activities (present but not in model).
+          2. Declarative — Mine from Log: Upload an event log only. A declarative model (behavioral constraints) is automatically mined using DECLARE templates; select constraint types and a minimum support threshold. Deviations are violations of mined constraints.
+          3. Declarative — Upload Model: Upload an event log and a pre-existing .decl model file. Conformance is checked directly against the uploaded model; deviations are violations of its constraints."
           arrow
           placement="right"
         >
@@ -214,6 +252,34 @@ const WelcomePage: React.FC = () => {
           <ToggleButton value="declarative">Declarative Conformance Checking</ToggleButton>
         </ToggleButtonGroup>
 
+        {/* Declarative sub-mode selection */}
+        {mode === 'declarative' && (
+          <Paper sx={{ p: 2, backgroundColor: '#f9f9f9' }}>
+            <Typography variant="subtitle2" gutterBottom color="text.secondary">
+              Choose declarative approach:
+            </Typography>
+            <ToggleButtonGroup
+              value={declSubMode}
+              exclusive
+              onChange={handleDeclSubModeChange}
+              fullWidth
+              size="small"
+            >
+              <ToggleButton value="mine">
+                Mine Model from Log
+              </ToggleButton>
+              <ToggleButton value="upload">
+                Upload .decl Model
+              </ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+              {declSubMode === 'mine'
+                ? "A declarative model will be automatically mined from your event log using DECLARE templates."
+                : "Upload a pre-existing .decl model and check your event log for conformance against it."}
+            </Typography>
+          </Paper>
+        )}
+
         {/* BPMN mode: process model upload */}
         {mode === 'bpmn' && (
           <Paper sx={{ p: 3 }}>
@@ -227,19 +293,35 @@ const WelcomePage: React.FC = () => {
           </Paper>
         )}
 
-        {/* Event log upload (both modes) */}
+        {/* Event log upload (all modes) */}
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6">Upload Event Log</Typography>
           <TextField
             type="file"
-            inputProps={{ accept: '.xes,.csv' }}
+            inputProps={{ accept: '.xes,.csv,.xes.gz' }}
             onChange={(e) => handleFileChange(e, setXesFile)}
             fullWidth
           />
         </Paper>
 
-        {/* Declarative mode: template selection + min_support */}
-        {mode === 'declarative' && (
+        {/* Declarative upload mode: .decl model file */}
+        {mode === 'declarative' && declSubMode === 'upload' && (
+          <Paper sx={{ p: 3 }}>
+            <Typography variant="h6">Upload Declarative Model</Typography>
+            <Typography variant="body2" color="text.secondary" gutterBottom>
+              Upload a .decl file containing DECLARE constraints.
+            </Typography>
+            <TextField
+              type="file"
+              inputProps={{ accept: '.decl' }}
+              onChange={(e) => handleFileChange(e, setDeclFile)}
+              fullWidth
+            />
+          </Paper>
+        )}
+
+        {/* Declarative mine mode: template selection + min_support */}
+        {mode === 'declarative' && declSubMode === 'mine' && (
           <>
             <Paper sx={{ p: 3, textAlign: 'left' }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
@@ -298,7 +380,11 @@ const WelcomePage: React.FC = () => {
               startIcon={isProcessing ? <CircularProgress size={20} /> : <UploadFileIcon />}
             >
               {isProcessing
-                ? (mode === 'bpmn' ? "Computing Alignments..." : "Mining Constraints...")
+                ? (mode === 'bpmn'
+                    ? "Computing Alignments..."
+                    : declSubMode === 'upload'
+                      ? "Checking Conformance..."
+                      : "Mining Constraints...")
                 : "Upload & Compute"
               }
             </Button>

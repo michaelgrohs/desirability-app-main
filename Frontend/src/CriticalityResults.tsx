@@ -119,11 +119,6 @@ const CriticalityResults: React.FC = () => {
   const navigate = useNavigate();
   const { setContinue } = useBottomNav();
 
-  React.useEffect(() => {
-    setContinue({ label: "Back to Start", onClick: () => navigate("/") });
-    return () => setContinue(null);
-  }, [navigate, setContinue]);
-
   const results: CausalResult[] = location.state?.results || [];
   const criticalityMap: CriticalityMap = location.state?.criticalityMap || {};
 
@@ -137,7 +132,7 @@ const CriticalityResults: React.FC = () => {
 
       dimensions.forEach((dim) => {
         const result = results.find((r) => r.dimension === dim && r.deviation === dev);
-        if (!result) return;
+        if (!result || result.ate == null) return;
 
         const label = getCriticality(result.ate, criticalityMap[dim]);
         const weight = criticalityWeight(label);
@@ -151,6 +146,17 @@ const CriticalityResults: React.FC = () => {
     .sort((a, b) => b.score - a.score);
 
   const [priorityList, setPriorityList] = React.useState(deviationPriorities);
+
+  React.useEffect(() => {
+    setContinue({
+      label: "Recommendations",
+      onClick: () =>
+        navigate("/recommendations", {
+          state: { results, criticalityMap, priorityList },
+        }),
+    });
+    return () => setContinue(null);
+  }, [navigate, setContinue, results, criticalityMap, priorityList]);
 
   // Root cause analysis state
   const [selectedCell, setSelectedCell] = React.useState<{ dimension: string; deviation: string } | null>(null);
@@ -189,7 +195,7 @@ const CriticalityResults: React.FC = () => {
     dimensions.forEach((dim) => {
       deviations.forEach((dev) => {
         const result = results.find((r) => r.dimension === dim && r.deviation === dev);
-        if (!result) return;
+        if (!result || result.ate == null) return;
 
         const label = getCriticality(result.ate, criticalityMap[dim]);
         csv += `${dim},${dev},${label ?? ""},${result.ate}\n`;
@@ -225,7 +231,7 @@ const CriticalityResults: React.FC = () => {
           const result = results.find((r) => r.dimension === dim && r.deviation === dev);
           if (!result) return "";
           const label = getCriticality(result.ate, criticalityMap[dim]);
-          return `${label ?? "-"} (${result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+          return `${label ?? "-"} (${result.ate != null ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "–"})`;
         }),
       ]),
     });
@@ -720,7 +726,7 @@ const CriticalityResults: React.FC = () => {
                       "&:hover": { opacity: 0.85 },
                     }}
                   >
-                    {label ?? "-"} ({result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                    {label ?? "-"} ({result.ate != null ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "–"})
                   </TableCell>
                 );
               })}

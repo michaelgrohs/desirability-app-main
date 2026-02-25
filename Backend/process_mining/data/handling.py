@@ -30,13 +30,10 @@ def ask_for_path(rel_path='', index = -1):
 
 # this function converts a selected file in the path that is the input into a log
 def transform_to_log(LOG_PATH):
-    log = pd.read_csv(LOG_PATH, parse_dates=["Complete Timestamp"])
-    log.columns = [col.replace("(case)", "case:") for col in log.columns]
-    log['time:timestamp'] = pd.to_datetime(log['Complete Timestamp'])
-    log['case:concept:name'] = log['Case ID']
-    log['concept:name'] = log['Activity']
-    log = log_converter.apply(log)
-    return log
+    log_csv = pd.read_csv(LOG_PATH, encoding='utf-8-sig')
+    log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], utc=True)
+    xes_log = log_converter.apply(log_csv)
+    return xes_log
 
 def transform_to_pn(MODEL_PATH):
     bpmn_graph = pm4py.read_bpmn(MODEL_PATH)

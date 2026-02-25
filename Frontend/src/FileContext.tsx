@@ -19,7 +19,7 @@ interface OutcomeBin {
   percentageEndingCorrectly: number;
 }
 
-export type ConformanceMode = 'bpmn' | 'declarative';
+export type ConformanceMode = 'bpmn' | 'declarative' | 'declarative-model';
 
 interface DeviationSelection {
   column: string;   // exact matrix column name (e.g., "(Skip A)" or "Precedence_A_B")
