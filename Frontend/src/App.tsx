@@ -1,5 +1,5 @@
 import React from "react";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { FileProvider } from "./FileContext";
 import Layout from "./Layout";
 import WelcomePage from "./WelcomePage";
@@ -28,6 +28,7 @@ const App: React.FC = () => {
             <Route path="/causal-results" element={<CausalResults />} />
             <Route path="/criticality-results" element={<CriticalityResults />} />
             <Route path="/recommendations" element={<Recommendations />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
       </Router>

@@ -19,6 +19,14 @@ window.fetch = async (...args) => {
   return response;
 };
 
+// On any hard page load (fresh open or reload), always start from the home page
+const navEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
+if (navEntry && (navEntry.type === "navigate" || navEntry.type === "reload")) {
+  if (window.location.pathname !== "/") {
+    window.history.replaceState({}, "", "/");
+  }
+}
+
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
 );

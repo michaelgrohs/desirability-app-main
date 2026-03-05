@@ -2,7 +2,6 @@ import React, { useEffect, useState } from "react";
 import {
   Box,
   Typography,
-  CircularProgress,
   Table,
   Divider,
   TableHead,
@@ -16,6 +15,7 @@ import {
   Button,
   Tooltip,
   IconButton,
+  Alert,
 } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
 
@@ -126,9 +126,7 @@ const CausalResults: React.FC = () => {
   };
 
   const selectedDimensions = location.state?.selectedDimensions || [];
-
-  const [results, setResults] = useState<CausalResult[]>([]);
-  const [loading, setLoading] = useState(true);
+  const results: CausalResult[] = location.state?.results || [];
 
   // selected levels per dimension (ordered in LEVEL_ORDER)
   const [selectedLevels, setSelectedLevels] = React.useState<{
@@ -180,33 +178,6 @@ const CausalResults: React.FC = () => {
 
 
 
-  // fetch causal effects
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/compute-causal-effects`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            deviations: selectedDeviations.map((d: any) => d.column),
-            dimensions: selectedDimensions,
-          }),
-        });
-
-        const text = await res.text();
-        const data = JSON.parse(text);
-
-        setResults(data.results || []);
-      } catch (err) {
-        console.error("Fetch failed:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const maxAbsEffect = getMaxAbsEffect(results);
 
@@ -307,14 +278,6 @@ const CausalResults: React.FC = () => {
     return () => setContinue(null);
   }, [results, boundaries, selectedLevels, navigate, setContinue]);
 
-  if (loading) {
-    return (
-      <Box mt={6} textAlign="center">
-        <CircularProgress />
-        <Typography mt={2}>Computing causal effects...</Typography>
-      </Box>
-    );
-  }
 
   return (
     <Box sx={{ width: "90vw", maxWidth: 1000, margin: "0 auto", mt: 4 }}>
@@ -415,6 +378,16 @@ const CausalResults: React.FC = () => {
 
                 if (!result) return <TableCell key={dev} />;
 
+                if (result.error) {
+                  return (
+                    <Tooltip key={dev} title={`Computation failed: ${result.error}`} arrow placement="top">
+                      <TableCell align="center" style={{ backgroundColor: "#fff3e0", minWidth: 80, cursor: "help" }}>
+                        <Typography variant="caption" color="warning.dark">⚠ error</Typography>
+                      </TableCell>
+                    </Tooltip>
+                  );
+                }
+
                 const bgColor = getCellColor(dim, result.ate, maxAbsEffect);
 
                 return (
@@ -444,6 +417,20 @@ const CausalResults: React.FC = () => {
           ))}
         </TableBody>
       </Table>
+
+      {/* Per-combination errors */}
+      {results.filter((r) => r.error).length > 0 && (
+        <Alert severity="warning" sx={{ mt: 2 }}>
+          <strong>Some combinations could not be computed:</strong>
+          <ul style={{ margin: "6px 0 0 0", paddingLeft: 20 }}>
+            {results.filter((r) => r.error).map((r, i) => (
+              <li key={i} style={{ fontSize: 12 }}>
+                <strong>{r.dimension}</strong> × <em>{r.deviation}</em>: {r.error}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
 
       {/* Criticality configurator */}
       <Box mt={6}>

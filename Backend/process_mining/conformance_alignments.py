@@ -15,9 +15,46 @@ def calculate_alignments(model_path: str, log):
 
     net, initial_marking, final_marking = read_model_as_petri_net(model_path)
 
-    aligned_traces = alignments.apply_log(log, net, initial_marking, final_marking)
+    return calculate_alignments_from_petri_net(net, initial_marking, final_marking, log)
 
-    return aligned_traces
+
+def calculate_alignments_from_petri_net(net, im, fm, log):
+    """Compute trace alignments directly from a Petri net.
+    Uses variant-based alignment: aligns each unique activity sequence once,
+    then maps results back to all traces — much faster on real logs.
+    """
+    im, fm = _ensure_markings(net, im, fm)
+
+    # Group trace indices by their activity sequence (variant)
+    variant_to_indices = defaultdict(list)
+    for i, trace in enumerate(log):
+        variant = tuple(e['concept:name'] for e in trace if 'concept:name' in e)
+        variant_to_indices[variant].append(i)
+
+    print(f"  → {len(log)} traces, {len(variant_to_indices)} unique variants — computing {len(variant_to_indices)} alignments")
+
+    # Align one representative trace per variant
+    variant_list = list(variant_to_indices.keys())
+    representative_indices = [variant_to_indices[v][0] for v in variant_list]
+
+    from pm4py.objects.log.obj import EventLog
+    mini_log = EventLog([log[i] for i in representative_indices])
+
+    n_cores = os.cpu_count() or 1
+    parameters = {
+        alignments.Parameters.CORES: n_cores,
+        alignments.Parameters.PARAM_MAX_ALIGN_TIME_TRACE: 120,  # skip traces that take >120s
+    }
+    print(f"  → aligning {len(mini_log)} variants using {n_cores} cores")
+    variant_alignments = alignments.apply_log(mini_log, net, im, fm, parameters=parameters)
+
+    # Map results back to all traces in original order
+    result = [None] * len(log)
+    for v_idx, variant in enumerate(variant_list):
+        for trace_idx in variant_to_indices[variant]:
+            result[trace_idx] = variant_alignments[v_idx]
+
+    return result
 
 
 def _ensure_markings(net, im, fm):

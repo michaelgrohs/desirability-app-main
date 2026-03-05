@@ -74,6 +74,7 @@ const SelectDimensions: React.FC = () => {
   const [isComputing, setIsComputing] = useState(false);
   const [computeError, setComputeError] = useState<string | null>(null);
   const [computeSuccess, setComputeSuccess] = useState(false);
+  const [causalErrors, setCausalErrors] = useState<{ deviation: string; dimension: string; error: string }[]>([]);
   const [showNonSelected, setShowNonSelected] = useState(false);
     const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
     const [matrixRows, setMatrixRows] = useState<any[]>([]);
@@ -145,11 +146,10 @@ const SelectDimensions: React.FC = () => {
         })
       });
 
+      const json = await response.json();
       if (!response.ok) {
-        throw new Error("Failed to compute dimensions. Please check your configuration and try again.");
+        throw new Error(json?.error || "Failed to compute dimensions. Please check your configuration and try again.");
       }
-
-      await response.json();
 
       // reload matrix after computing
       const updated = await fetch(`${API_URL}/api/current-impact-matrix`);
@@ -169,18 +169,51 @@ const SelectDimensions: React.FC = () => {
   };
 
   // ---------------------------
-  // Continue (computes first, then navigates)
+  // Continue (configure → causal effects → navigate)
   // ---------------------------
   const handleSubmit = async () => {
     if (selectedDimensions.length === 0) return;
-    const ok = await handleComputeDimensions();
-    if (ok) {
-      navigate("/causal-results", {
-        state: {
-          selectedDimensions,
-          selectedDeviations
-        }
+    setCausalErrors([]);
+
+    const configOk = await handleComputeDimensions();
+    if (!configOk) return;
+
+    // Now run causal computation and stay on this page until done
+    try {
+      setIsComputing(true);
+      const res = await fetch(`${API_URL}/api/compute-causal-effects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviations: (selectedDeviations as any[]).map((d: any) => d.column),
+          dimensions: selectedDimensions,
+        }),
       });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setComputeError(data?.error || "Causal effect computation failed.");
+        return;
+      }
+
+      const results: any[] = data.results || [];
+      const errors = results.filter((r: any) => r.error);
+      const successes = results.filter((r: any) => r.ate !== undefined);
+
+      setCausalErrors(errors);
+
+      if (successes.length === 0) {
+        setComputeError("No causal effects could be computed. See details below.");
+        return;
+      }
+
+      navigate("/causal-results", {
+        state: { selectedDimensions, selectedDeviations, results },
+      });
+    } catch (err) {
+      setComputeError("Causal effect computation failed — could not reach the backend.");
+    } finally {
+      setIsComputing(false);
     }
   };
 
@@ -204,6 +237,16 @@ const SelectDimensions: React.FC = () => {
     return sample !== undefined && typeof sample[col] === "number";
   };
 
+  // Binary columns (only 0/1 values) should use a dropdown, not a slider
+  const isColumnBinary = (col: string): boolean => {
+    const vals = matrixRows
+      .map((row) => row[col])
+      .filter((v) => v !== null && v !== undefined && !Array.isArray(v));
+    if (vals.length === 0) return false;
+    const unique = new Set(vals.map(String));
+    return unique.size <= 2 && Array.from(unique).every((v) => v === "0" || v === "1");
+  };
+
   const getColumnUniqueValues = (col: string): string[] => {
     const values = new Set<string>();
     matrixRows.forEach((row) => {
@@ -225,6 +268,13 @@ const SelectDimensions: React.FC = () => {
     if (nums.length === 0) return [0, 100];
     return [Math.min(...nums), Math.max(...nums)];
   };
+
+  // Columns usable in rule conditions: exclude only trace_id
+  const ruleColumns = matrixColumns.filter((col) => col !== "trace_id");
+
+  // Activity-sequence column (array): usable only with contains/starts_with/ends_with
+  const isActivityColumn = (col: string) =>
+    matrixRows.some((r) => Array.isArray(r[col]));
 
   // ---------------------------
   // Matrix display helpers
@@ -442,131 +492,207 @@ const SelectDimensions: React.FC = () => {
             )}
 
 
-            {/* RULE */}
-            {configs[dim]?.computationType === "rule" && (
-              <>
-                {/* Column Selection */}
-                <Select
-                  fullWidth
-                  sx={{ mt: 2 }}
-                  value={configs[dim]?.config?.column || ""}
-                  onChange={(e) =>
-                    updateConfig(dim, {
-                      config: {
-                        ...configs[dim]?.config,
-                        column: e.target.value
-                      }
-                    })
-                  }
-                >
-                  {matrixColumns.map((col) => (
-                    <MenuItem key={col} value={col}>
-                      {col}
-                    </MenuItem>
-                  ))}
-                </Select>
+            {/* RULE — compound conditions */}
+            {configs[dim]?.computationType === "rule" && (() => {
+              // Normalise: always work with the conditions array format
+              const rawConfig = configs[dim]?.config || {};
+              const conditions: any[] = rawConfig.conditions && rawConfig.conditions.length > 0
+                ? rawConfig.conditions
+                : rawConfig.column
+                  ? [{ column: rawConfig.column, operator: rawConfig.operator || "", value: rawConfig.value || "" }]
+                  : [{ column: "", operator: "", value: "" }];
 
-                {/* Operator Selection */}
-                <Select
-                  fullWidth
-                  sx={{ mt: 2 }}
-                  value={configs[dim]?.config?.operator || ""}
-                  onChange={(e) =>
-                    updateConfig(dim, {
-                      config: {
-                        ...configs[dim]?.config,
-                        operator: e.target.value
-                      }
-                    })
-                  }
-                >
-                  <MenuItem value="equals">Equals</MenuItem>
-                  <MenuItem value="not_equals">Not Equals</MenuItem>
-                  <MenuItem value="contains">Contains</MenuItem>
-                  <MenuItem value="starts_with">Starts With</MenuItem>
-                  <MenuItem value="ends_with">Ends With</MenuItem>
-                  <MenuItem value="greater">Greater Than</MenuItem>
-                  <MenuItem value="less">Less Than</MenuItem>
-                  <MenuItem value="greater_equal">Greater or Equal</MenuItem>
-                  <MenuItem value="less_equal">Less or Equal</MenuItem>
-                </Select>
+              const setConditions = (newConds: any[]) => {
+                updateConfig(dim, { config: { conditions: newConds } });
+              };
 
-                {/* Value Input — dropdown for categorical, slider+text for numerical */}
-                {configs[dim]?.config?.column ? (
-                  isColumnNumerical(configs[dim].config.column) ? (() => {
-                    const [rMin, rMax] = getColumnRange(configs[dim].config.column);
-                    const step = rMin === rMax ? 1 : (rMax - rMin) / 1000;
-                    const rawVal = parseFloat(configs[dim]?.config?.value);
-                    const sliderVal = isNaN(rawVal) ? rMin : rawVal;
-                    return (
-                      <Box sx={{ mt: 2 }}>
-                        <Typography variant="caption" color="text.secondary">Value</Typography>
-                        <Slider
-                          value={sliderVal}
-                          min={rMin}
-                          max={rMax}
-                          step={step}
-                          onChange={(_, v) =>
-                            updateConfig(dim, {
-                              config: { ...configs[dim]?.config, value: String(v) }
-                            })
-                          }
-                          valueLabelDisplay="auto"
-                          valueLabelFormat={(v) =>
-                            v.toLocaleString('en-US', { maximumFractionDigits: 2 })
-                          }
-                        />
-                        <TextField
-                          fullWidth
-                          size="small"
-                          label="Value"
-                          value={(() => {
-                            const v = configs[dim]?.config?.value;
-                            if (!v || isNaN(Number(v))) return v || "";
-                            return Number(v).toLocaleString('en-US', { maximumFractionDigits: 6 });
-                          })()}
-                          onChange={(e) => {
-                            const raw = e.target.value.replace(/,/g, '');
-                            updateConfig(dim, {
-                              config: { ...configs[dim]?.config, value: raw }
-                            });
-                          }}
-                        />
-                      </Box>
-                    );
-                  })() : (
-                    <Select
-                      fullWidth
-                      sx={{ mt: 2 }}
-                      displayEmpty
-                      value={configs[dim]?.config?.value || ""}
-                      onChange={(e) =>
-                        updateConfig(dim, {
-                          config: { ...configs[dim]?.config, value: e.target.value }
-                        })
-                      }
-                    >
-                      <MenuItem value=""><em>Select value…</em></MenuItem>
-                      {getColumnUniqueValues(configs[dim].config.column).map((v) => (
-                        <MenuItem key={v} value={v}>{v}</MenuItem>
-                      ))}
-                    </Select>
-                  )
-                ) : (
+              const updateCondition = (idx: number, patch: any) => {
+                const updated = conditions.map((c, i) => i === idx ? { ...c, ...patch } : c);
+                setConditions(updated);
+              };
+
+              const addCondition = (connector: "AND" | "OR") => {
+                setConditions([...conditions, { connector, column: "", operator: "", value: "" }]);
+              };
+
+              const removeCondition = (idx: number) => {
+                if (conditions.length <= 1) return;
+                setConditions(conditions.filter((_, i) => i !== idx));
+              };
+
+              const renderValueInput = (cond: any, idx: number) => {
+                if (!cond.column) return (
                   <TextField
                     fullWidth
-                    sx={{ mt: 2 }}
+                    sx={{ mt: 1 }}
+                    size="small"
                     label="Value"
-                    value={configs[dim]?.config?.value || ""}
-                    onChange={(e) =>
-                      updateConfig(dim, {
-                        config: { ...configs[dim]?.config, value: e.target.value }
-                      })
-                    }
+                    value={cond.value || ""}
+                    onChange={(e) => updateCondition(idx, { value: e.target.value })}
                   />
-                )}
-              </>
-            )}
+                );
+                if (isColumnBinary(cond.column)) {
+                  return (
+                    <Select
+                      fullWidth
+                      sx={{ mt: 1 }}
+                      size="small"
+                      displayEmpty
+                      value={cond.value || ""}
+                      onChange={(e) => updateCondition(idx, { value: e.target.value })}
+                    >
+                      <MenuItem value=""><em>Select value…</em></MenuItem>
+                      <MenuItem value="0">0 — absent / false</MenuItem>
+                      <MenuItem value="1">1 — present / true</MenuItem>
+                    </Select>
+                  );
+                }
+                if (isColumnNumerical(cond.column)) {
+                  const [rMin, rMax] = getColumnRange(cond.column);
+                  const step = rMin === rMax ? 1 : (rMax - rMin) / 1000;
+                  const rawVal = parseFloat(cond.value);
+                  const sliderVal = isNaN(rawVal) ? rMin : rawVal;
+                  return (
+                    <Box sx={{ mt: 1 }}>
+                      <Typography variant="caption" color="text.secondary">Value</Typography>
+                      <Slider
+                        value={sliderVal}
+                        min={rMin}
+                        max={rMax}
+                        step={step}
+                        onChange={(_, v) => updateCondition(idx, { value: String(v) })}
+                        valueLabelDisplay="auto"
+                        valueLabelFormat={(v) => v.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                      />
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Value"
+                        value={(() => { const v = cond.value; if (!v || isNaN(Number(v))) return v || ""; return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }); })()}
+                        onChange={(e) => updateCondition(idx, { value: e.target.value.replace(/,/g, '') })}
+                      />
+                    </Box>
+                  );
+                }
+                return (
+                  <Select
+                    fullWidth
+                    sx={{ mt: 1 }}
+                    size="small"
+                    displayEmpty
+                    value={cond.value || ""}
+                    onChange={(e) => updateCondition(idx, { value: e.target.value })}
+                  >
+                    <MenuItem value=""><em>Select value…</em></MenuItem>
+                    {getColumnUniqueValues(cond.column).map((v) => (
+                      <MenuItem key={v} value={v}>{v}</MenuItem>
+                    ))}
+                  </Select>
+                );
+              };
+
+              return (
+                <>
+                  {conditions.map((cond, idx) => (
+                    <Box key={idx} sx={{ mt: 2, p: 1.5, border: "1px solid #e0e0e0", borderRadius: 1, backgroundColor: idx === 0 ? undefined : "#fafafa" }}>
+                      {/* Connector badge for conditions after the first */}
+                      {idx > 0 && (
+                        <Box display="flex" alignItems="center" gap={1} mb={1}>
+                          <Select
+                            size="small"
+                            value={cond.connector || "AND"}
+                            onChange={(e) => updateCondition(idx, { connector: e.target.value })}
+                            sx={{ minWidth: 90, fontWeight: 700 }}
+                          >
+                            <MenuItem value="AND">AND</MenuItem>
+                            <MenuItem value="OR">OR</MenuItem>
+                          </Select>
+                          <Typography variant="caption" color="text.secondary">condition {idx + 1}</Typography>
+                          <Button size="small" color="error" onClick={() => removeCondition(idx)} sx={{ ml: "auto", minWidth: 0, px: 1 }}>
+                            ✕
+                          </Button>
+                        </Box>
+                      )}
+
+                      {/* NOT toggle + Column */}
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <Button
+                          size="small"
+                          variant={cond.negate ? "contained" : "outlined"}
+                          color={cond.negate ? "error" : "inherit"}
+                          sx={{ minWidth: 44, fontWeight: 700, flexShrink: 0 }}
+                          onClick={() => updateCondition(idx, { negate: !cond.negate })}
+                        >
+                          NOT
+                        </Button>
+                        <Select
+                          fullWidth
+                          size="small"
+                          displayEmpty
+                          value={cond.column || ""}
+                          onChange={(e) => updateCondition(idx, { column: e.target.value, value: "" })}
+                        >
+                          <MenuItem value=""><em>Select column…</em></MenuItem>
+                          {ruleColumns.map((col) => (
+                            <MenuItem key={col} value={col}>{col}</MenuItem>
+                          ))}
+                        </Select>
+                      </Box>
+
+                      {/* Operator */}
+                      <Select
+                        fullWidth
+                        size="small"
+                        sx={{ mt: 1 }}
+                        displayEmpty
+                        value={cond.operator || ""}
+                        onChange={(e) => updateCondition(idx, { operator: e.target.value })}
+                      >
+                        <MenuItem value=""><em>Select operator…</em></MenuItem>
+                        {isActivityColumn(cond.column) ? (
+                          // Array columns only support sequence operators
+                          [
+                            <MenuItem key="contains" value="contains">Contains activity</MenuItem>,
+                            <MenuItem key="starts_with" value="starts_with">Starts with activity</MenuItem>,
+                            <MenuItem key="ends_with" value="ends_with">Ends with activity</MenuItem>,
+                          ]
+                        ) : isColumnNumerical(cond.column) && !isColumnBinary(cond.column) ? (
+                          [
+                            <MenuItem key="greater" value="greater">Greater Than</MenuItem>,
+                            <MenuItem key="less" value="less">Less Than</MenuItem>,
+                            <MenuItem key="greater_equal" value="greater_equal">Greater or Equal</MenuItem>,
+                            <MenuItem key="less_equal" value="less_equal">Less or Equal</MenuItem>,
+                            <MenuItem key="equals" value="equals">Equals</MenuItem>,
+                            <MenuItem key="not_equals" value="not_equals">Not Equals</MenuItem>,
+                          ]
+                        ) : (
+                          [
+                            <MenuItem key="equals" value="equals">Equals</MenuItem>,
+                            <MenuItem key="not_equals" value="not_equals">Not Equals</MenuItem>,
+                            <MenuItem key="contains" value="contains">Contains</MenuItem>,
+                            <MenuItem key="starts_with" value="starts_with">Starts With</MenuItem>,
+                            <MenuItem key="ends_with" value="ends_with">Ends With</MenuItem>,
+                          ]
+                        )}
+                      </Select>
+
+                      {/* Value */}
+                      {renderValueInput(cond, idx)}
+                    </Box>
+                  ))}
+
+                  {/* Add AND / OR buttons */}
+                  <Box display="flex" gap={1} mt={1.5}>
+                    <Button size="small" variant="outlined" onClick={() => addCondition("AND")}>
+                      + AND
+                    </Button>
+                    <Button size="small" variant="outlined" onClick={() => addCondition("OR")}>
+                      + OR
+                    </Button>
+                  </Box>
+                </>
+              );
+            })()}
 
 
           </CardContent>
@@ -574,12 +700,25 @@ const SelectDimensions: React.FC = () => {
       ))}
 
       {computeError && (
-        <Alert severity="error" sx={{ mt: 3 }} onClose={() => setComputeError(null)}>
+        <Alert severity="error" sx={{ mt: 3 }} onClose={() => { setComputeError(null); setCausalErrors([]); }}>
           {computeError}
         </Alert>
       )}
 
-      {computeSuccess && (
+      {causalErrors.length > 0 && (
+        <Alert severity="warning" sx={{ mt: 2 }}>
+          <strong>Some causal effects could not be computed:</strong>
+          <ul style={{ margin: "6px 0 0 0", paddingLeft: 20 }}>
+            {causalErrors.map((e, i) => (
+              <li key={i} style={{ fontSize: 12 }}>
+                <strong>{e.dimension}</strong> × <em>{e.deviation}</em>: {e.error}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      {computeSuccess && !computeError && causalErrors.length === 0 && (
         <Alert severity="success" sx={{ mt: 3 }} onClose={() => setComputeSuccess(false)}>
           Dimensions computed successfully.
         </Alert>

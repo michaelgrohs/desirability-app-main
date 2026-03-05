@@ -55,9 +55,85 @@ from pm4py.objects.log.importer.xes import importer as xes_importer
 
 
 import traceback
+from sklearn.tree import DecisionTreeClassifier, _tree
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
+
+
+def _layout_bpmn(bpmn_graph, h_spacing=220, v_spacing=130, node_w=120, node_h=60, event_size=36, gw_size=50):
+    """Assign a simple left-to-right layered layout so bpmn-js can render it."""
+    from collections import defaultdict, deque
+    from pm4py.objects.bpmn.obj import BPMN
+
+    nodes = list(bpmn_graph.get_nodes())
+    flows = list(bpmn_graph.get_flows())
+    if not nodes:
+        return
+
+    out_map = defaultdict(list)
+    in_map = defaultdict(list)
+    for f in flows:
+        out_map[f.get_source()].append(f.get_target())
+        in_map[f.get_target()].append(f.get_source())
+
+    sources = [n for n in nodes if not in_map[n]]
+    if not sources:
+        sources = [nodes[0]]
+
+    # BFS layering — visited set prevents infinite loops on cyclic BPMN graphs
+    layer = {}
+    visited = set()
+    queue = deque()
+    for s in sources:
+        layer[s] = 0
+        queue.append(s)
+        visited.add(s)
+    while queue:
+        n = queue.popleft()
+        for m in out_map[n]:
+            if m not in visited:
+                visited.add(m)
+                layer[m] = layer[n] + 1
+                queue.append(m)
+    for n in nodes:
+        if n not in layer:
+            layer[n] = 0
+
+    layer_nodes = defaultdict(list)
+    for n, l in layer.items():
+        layer_nodes[l].append(n)
+
+    ly = bpmn_graph.get_layout()
+
+    for l, lnodes in layer_nodes.items():
+        count = len(lnodes)
+        for i, n in enumerate(lnodes):
+            nl = ly.get(n)
+            if isinstance(n, (BPMN.StartEvent, BPMN.EndEvent,
+                               BPMN.IntermediateCatchEvent, BPMN.IntermediateThrowEvent)):
+                w, h = event_size, event_size
+            elif isinstance(n, (BPMN.ExclusiveGateway, BPMN.ParallelGateway,
+                                 BPMN.InclusiveGateway, BPMN.EventBasedGateway)):
+                w, h = gw_size, gw_size
+            else:
+                w, h = node_w, node_h
+            nl.set_x(l * h_spacing)
+            nl.set_y(i * v_spacing - (count - 1) * v_spacing / 2 + 300)
+            nl.set_width(w)
+            nl.set_height(h)
+
+    for f in flows:
+        src_l = ly.get(f.get_source())
+        tgt_l = ly.get(f.get_target())
+        sx = src_l.get_x() + src_l.get_width()
+        sy = src_l.get_y() + src_l.get_height() / 2
+        tx = tgt_l.get_x()
+        ty = tgt_l.get_y() + tgt_l.get_height() / 2
+        el = ly.get(f)
+        el.del_waypoints()
+        el.add_waypoint((sx, sy))
+        el.add_waypoint((tx, ty))
 
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -89,6 +165,8 @@ last_uploaded_data = {
     "atoms_df": None,
     "event_log_pa": None,
     "decl_constraint_info": None,
+    "alignment_status": "idle",  # 'idle' | 'computing' | 'ready' | 'error'
+    "alignment_error": None,
 }
 
 def reset_cache():
@@ -103,6 +181,8 @@ def reset_cache():
     last_uploaded_data["event_log_pa"] = None
     last_uploaded_data["decl_path"] = None
     last_uploaded_data["decl_constraint_info"] = None
+    last_uploaded_data["alignment_status"] = "idle"
+    last_uploaded_data["alignment_error"] = None
 
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
@@ -183,6 +263,123 @@ def upload_files():
     return jsonify({
         "message": "Files uploaded and alignments computed",
         "alignment_count": len(alignments)
+    })
+
+
+def _compute_alignments_background():
+    """Run alignment computation in a background thread (called after mining is done)."""
+    last_uploaded_data['alignment_status'] = 'computing'
+    last_uploaded_data['alignment_error'] = None
+    try:
+        log = get_cached_xes_log()
+        aligned_traces = calculate_alignments(
+            last_uploaded_data['bpmn_path'], log
+        )
+        last_uploaded_data['alignments'] = aligned_traces
+        last_uploaded_data['alignment_status'] = 'ready'
+        print(f"Background alignments done: {len(aligned_traces)} traces")
+    except Exception as e:
+        last_uploaded_data['alignment_status'] = 'error'
+        last_uploaded_data['alignment_error'] = str(e)
+        print(f"Background alignment error: {e}")
+
+
+def _mine_and_align_background(algorithm, noise_threshold, xes_path, upload_folder, log_stem):
+    """Mine process model via subprocess (avoids fork-in-thread deadlock on macOS), then compute alignments."""
+    import subprocess
+    try:
+        print(f"[bg] Mining model with algorithm={algorithm}, noise_threshold={noise_threshold}", flush=True)
+        bpmn_path = os.path.join(upload_folder, f'{log_stem}_{algorithm}.bpmn')
+        # Use abspath so the path is correct regardless of CWD
+        worker_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'process_mining', 'mine_worker.py')
+        args_json = json.dumps({
+            'algorithm': algorithm,
+            'noise_threshold': noise_threshold,
+            'xes_path': os.path.abspath(xes_path),
+            'bpmn_path': os.path.abspath(bpmn_path),
+        })
+        # Inherit parent stdout/stderr — no pipes, no deadlocks, output visible in Flask console
+        proc = subprocess.Popen(
+            [sys.executable, worker_script, args_json],
+            stdin=subprocess.DEVNULL,
+        )
+        returncode = proc.wait(timeout=600)
+        if returncode != 0:
+            raise RuntimeError(f'Mining subprocess exited with code {returncode}')
+
+        last_uploaded_data['bpmn_path'] = bpmn_path
+        print(f"[bg] Mining done, starting alignments", flush=True)
+        _compute_alignments_background()
+    except Exception as e:
+        last_uploaded_data['alignment_status'] = 'error'
+        last_uploaded_data['alignment_error'] = str(e)
+        print(f"[bg] Mining error: {e}", flush=True)
+
+
+@app.route('/api/alignment-status', methods=['GET'])
+def alignment_status_route():
+    return jsonify({
+        "status": last_uploaded_data.get('alignment_status', 'idle'),
+        "error": last_uploaded_data.get('alignment_error'),
+    })
+
+
+@app.route('/upload-mine-model', methods=['POST'])
+def upload_mine_model():
+    """Mine a process model from the event log and compute trace alignments."""
+    xes_file = request.files.get('xes')
+    if not xes_file:
+        return jsonify({"error": "Missing event log file"}), 400
+
+    algorithm = request.form.get('algorithm', 'inductive_infrequent')
+    noise_threshold = float(request.form.get('noise_threshold', '0.2'))
+
+    upload_folder = 'uploads'
+    os.makedirs(upload_folder, exist_ok=True)
+
+    raw_name = os.path.basename(xes_file.filename)
+    log_stem = raw_name.split('.')[0].replace(' ', '_')
+
+    xes_path = os.path.join(upload_folder, xes_file.filename)
+    xes_file.save(xes_path)
+
+    # Parse XES / CSV / GZ
+    _, ext = os.path.splitext(xes_path)
+    if ext == '.csv':
+        log_csv = pd.read_csv(xes_path, encoding='utf-8-sig')
+        log_csv['time:timestamp'] = pd.to_datetime(log_csv['time:timestamp'], utc=True)
+        xes_log = log_converter.apply(log_csv)
+    elif ext in ('.xes', '.gz'):
+        xes_log = xes_importer.apply(xes_path)
+    else:
+        return jsonify({"error": f"Unsupported log format: {ext}"}), 400
+
+    # Store everything except bpmn_path (not known yet — mining is background)
+    last_uploaded_data['bpmn_path'] = None
+    last_uploaded_data['xes_path'] = xes_path
+    last_uploaded_data['xes_log'] = xes_log
+    last_uploaded_data['bpmn_model'] = None
+    last_uploaded_data['deviation_matrix'] = None
+    last_uploaded_data['impact_matrix'] = None
+    last_uploaded_data['alignments'] = None
+    last_uploaded_data['atoms'] = None
+    last_uploaded_data['atoms_df'] = None
+    last_uploaded_data['event_log_pa'] = None
+    last_uploaded_data['mode'] = 'bpmn'
+    last_uploaded_data['alignment_status'] = 'mining'
+    last_uploaded_data['alignment_error'] = None
+
+    import threading
+    t = threading.Thread(
+        target=_mine_and_align_background,
+        args=(algorithm, noise_threshold, xes_path, upload_folder, log_stem),
+        daemon=True,
+    )
+    t.start()
+
+    return jsonify({
+        "message": f"Mining started ({algorithm})",
+        "algorithm": algorithm,
     })
 
 
@@ -495,6 +692,20 @@ def upload_declarative_model():
     violations_df = conf_check_res.get_metric(metric="num_violations")
     constraint_cols = list(violations_df.columns)
 
+    # Get activation counts (0 activations → constraint never triggered, violations are vacuous)
+    try:
+        activations_df = conf_check_res.get_metric(metric="num_activations")
+        activations_per_constraint = activations_df.fillna(0).sum(axis=0).to_dict()
+    except Exception:
+        activations_per_constraint = {}
+
+    # Build a mapping serialized_constraint_str → constraint_dict for data conditions
+    constraint_map = {
+        declare_model.serialized_constraints[i]: declare_model.constraints[i]
+        for i in range(len(declare_model.constraints))
+        if i < len(declare_model.serialized_constraints)
+    }
+
     # Build binary violation matrix aligned to case_ids_ordered
     violations_binary = (violations_df > 0).astype(int)
 
@@ -554,10 +765,32 @@ def upload_declarative_model():
         else:
             ctype = str(col)
             ops = []
+
+        # Extract data conditions from the parsed constraint dict
+        cdict = constraint_map.get(col, {})
+        conditions = cdict.get('condition', [])
+        is_binary = cdict.get('template') and getattr(cdict['template'], 'is_binary', False)
+
+        activation_cond = conditions[0].strip() if len(conditions) > 0 else ""
+        # For binary templates condition[1] is the correlation/target condition; for unary it doesn't exist
+        if is_binary and len(conditions) > 2:
+            correlation_cond = conditions[1].strip()
+        else:
+            correlation_cond = ""
+        # Time condition: last element (may be a time range string like "92,14473,s")
+        time_cond = conditions[-1].strip() if len(conditions) > 0 else ""
+
+        total_activations = int(activations_per_constraint.get(col, 0))
+
         decl_constraint_info.append({
             'col_name': col,
             'type': ctype,
             'operands': ops,
+            'activation_condition': activation_cond if activation_cond else None,
+            'correlation_condition': correlation_cond if correlation_cond else None,
+            'time_condition': time_cond if time_cond else None,
+            'is_data_aware': bool(activation_cond or correlation_cond),
+            'total_activations': total_activations,
         })
     last_uploaded_data['decl_constraint_info'] = decl_constraint_info
 
@@ -574,8 +807,12 @@ def get_cached_impact_matrix():
     return last_uploaded_data.get("impact_matrix")
 
 def get_cached_alignments():
+    import time
+    # Wait for background computation if it is in progress
+    while last_uploaded_data.get('alignment_status') == 'computing':
+        time.sleep(0.5)
     if last_uploaded_data['alignments'] is None:
-
+        # Fallback: compute synchronously (e.g. direct BPMN-upload mode)
         last_uploaded_data['alignments'] = calculate_alignments(
             last_uploaded_data['bpmn_path'],
             get_cached_xes_log()
@@ -645,8 +882,11 @@ def deviation_overview():
                 "type": info['type'],
                 "operands": info['operands'],
                 "violation_count": violation_count,
-                "support": 1.0,
-                "confidence": 1.0,
+                "activation_condition": info.get('activation_condition'),
+                "correlation_condition": info.get('correlation_condition'),
+                "time_condition": info.get('time_condition'),
+                "is_data_aware": info.get('is_data_aware', False),
+                "total_activations": info.get('total_activations', 0),
             })
         return jsonify({"constraints": constraints})
 
@@ -816,87 +1056,67 @@ def configure_dimensions():
 
         elif comp_type == "rule":
 
-            column = config["column"]
-
-            operator = config.get("operator")
-
-            value = config.get("value")
-
-            if column not in df.columns:
-                return jsonify({"error": f"Column '{column}' not found"}), 400
+            def _evaluate_single_condition(df, column, operator, value):
+                """Evaluate one condition and return a boolean Series."""
+                if column not in df.columns:
+                    raise ValueError(f"Column '{column}' not found")
+                if operator == "equals":
+                    return df[column] == value
+                elif operator == "not_equals":
+                    return df[column] != value
+                elif operator == "contains":
+                    return df[column].apply(
+                        lambda x: any(str(value) in str(v) for v in x) if isinstance(x, list) else str(value) in str(x)
+                    )
+                elif operator == "starts_with":
+                    return df[column].apply(
+                        lambda x: any(str(v).startswith(str(value)) for v in x) if isinstance(x, list) else str(x).startswith(str(value))
+                    )
+                elif operator == "ends_with":
+                    return df[column].apply(
+                        lambda x: any(str(v).endswith(str(value)) for v in x) if isinstance(x, list) else str(x).endswith(str(value))
+                    )
+                elif operator == "greater":
+                    return df[column] > float(value)
+                elif operator == "less":
+                    return df[column] < float(value)
+                elif operator == "greater_equal":
+                    return df[column] >= float(value)
+                elif operator == "less_equal":
+                    return df[column] <= float(value)
+                else:
+                    raise ValueError(f"Unsupported operator: {operator}")
 
             try:
-
-                if operator == "equals":
-
-                    result = df[column] == value
-
-
-                elif operator == "not_equals":
-
-                    result = df[column] != value
-
-
-
-                elif operator == "contains":
-
-                    result = df[column].apply(
-
-                        lambda x: any(str(value) in str(v) for v in x) if isinstance(x, list) else str(value) in str(x)
-
-                    )
-
-
-
-
-                elif operator == "starts_with":
-
-                    result = df[column].apply(
-
-                        lambda x: any(str(v).startswith(str(value)) for v in x) if isinstance(x, list) else str(
-                            x).startswith(str(value))
-
-                    )
-
-
-
-
-                elif operator == "ends_with":
-
-                    result = df[column].apply(
-
-                        lambda x: any(str(v).endswith(str(value)) for v in x) if isinstance(x, list) else str(
-                            x).endswith(str(value))
-
-                    )
-
-
-                elif operator == "greater":
-
-                    result = df[column] > float(value)
-
-
-                elif operator == "less":
-
-                    result = df[column] < float(value)
-
-
-                elif operator == "greater_equal":
-
-                    result = df[column] >= float(value)
-
-
-                elif operator == "less_equal":
-
-                    result = df[column] <= float(value)
-
-
+                # Support both legacy single-condition format and new compound conditions array
+                conditions = config.get("conditions")
+                if conditions and isinstance(conditions, list) and len(conditions) > 0:
+                    # New compound format: list of {column, operator, value, connector?}
+                    combined = None
+                    for cond in conditions:
+                        col = cond.get("column", "")
+                        op = cond.get("operator", "")
+                        val = cond.get("value", "")
+                        connector = cond.get("connector", "AND")  # first condition has no connector
+                        negate = cond.get("negate", False)
+                        single = _evaluate_single_condition(df, col, op, val)
+                        if negate:
+                            single = ~single
+                        if combined is None:
+                            combined = single
+                        elif connector == "OR":
+                            combined = combined | single
+                        else:  # AND (default)
+                            combined = combined & single
+                    result = combined if combined is not None else pd.Series(False, index=df.index)
                 else:
-
-                    return jsonify({"error": f"Unsupported operator: {operator}"}), 400
+                    # Legacy single condition format
+                    column = config["column"]
+                    operator = config.get("operator")
+                    value = config.get("value")
+                    result = _evaluate_single_condition(df, column, operator, value)
 
                 df[dimension] = result.astype(int)
-
 
             except Exception as e:
 
@@ -973,7 +1193,7 @@ def compute_causal_effects():
                 results.append({
                     "deviation": dev,
                     "dimension": dim,
-                    "error": str(e)
+                    "error": f"[{dim} × {dev}] {type(e).__name__}: {str(e)}"
                 })
     print(results)
     last_uploaded_data["causal_results"] = results
@@ -1160,8 +1380,11 @@ def api_model_content():
                 "type": c['type'],
                 "op_0": c['operands'][0] if c['operands'] else "",
                 "op_1": c['operands'][1] if len(c['operands']) > 1 else "",
-                "support": 1.0,
-                "confidence": 1.0,
+                "activation_condition": c.get('activation_condition'),
+                "correlation_condition": c.get('correlation_condition'),
+                "time_condition": c.get('time_condition'),
+                "is_data_aware": c.get('is_data_aware', False),
+                "total_activations": c.get('total_activations', 0),
             }
             for c in decl_constraint_info
         ]
@@ -1187,13 +1410,129 @@ def api_model_content():
     elif ext == '.pnml':
         from process_mining.conformance_alignments import read_model_as_petri_net
         net, im, fm = read_model_as_petri_net(model_path)
-        from pm4py.visualization.petri_net import visualizer as pn_visualizer
-        gviz = pn_visualizer.apply(net, im, fm,
-                                    parameters={pn_visualizer.Variants.WO_DECORATION.value.Parameters.FORMAT: "svg"})
-        svg_content = pn_visualizer.serialize(gviz).decode('utf-8')
-        return jsonify({"type": "pnml", "content": svg_content})
+        try:
+            from pm4py.visualization.petri_net import visualizer as pn_visualizer
+            gviz = pn_visualizer.apply(net, im, fm,
+                                       parameters={pn_visualizer.Variants.WO_DECORATION.value.Parameters.FORMAT: "svg"})
+            svg_content = pn_visualizer.serialize(gviz).decode('utf-8')
+            return jsonify({"type": "pnml", "content": svg_content})
+        except Exception as viz_err:
+            print(f"Petri net visualization failed ({viz_err}), falling back to info")
+            activities = sorted(set(t.label for t in net.transitions if t.label))
+            return jsonify({
+                "type": "pnml_info",
+                "activities": activities,
+                "n_places": len(net.places),
+                "n_transitions": len(net.transitions),
+                "n_arcs": len(net.arcs),
+            })
     else:
         return jsonify({"error": f"Unsupported model type: {ext}"}), 400
+
+
+@app.route('/api/deviation-rules', methods=['GET'])
+def api_deviation_rules():
+    deviation = request.args.get('deviation', '')
+    df = last_uploaded_data.get('deviation_matrix')
+
+    empty = {"rules": [], "feature_importance": [], "total_traces": 0, "deviation_rate": 0.0, "n_features": 0}
+
+    if df is None or deviation not in df.columns:
+        return jsonify(empty)
+
+    target = df[deviation].dropna()
+    if target.nunique() < 2:
+        return jsonify(empty)
+
+    # Detect other deviation columns (binary 0/1 only, excluding target)
+    other_dev_cols = set()
+    for col in df.columns:
+        if col == deviation:
+            continue
+        vals = df[col].dropna()
+        if len(vals) > 0 and set(vals.astype(float).unique()).issubset({0.0, 1.0}):
+            other_dev_cols.add(col)
+
+    exclude = {'trace_id', 'activities', deviation} | other_dev_cols
+    feature_cols = [c for c in df.columns if c not in exclude]
+
+    feature_dfs = []
+    for col in feature_cols:
+        col_data = df[col]
+        if pd.api.types.is_numeric_dtype(col_data):
+            median_val = col_data.median()
+            filled = col_data.fillna(median_val if pd.notna(median_val) else 0)
+            feature_dfs.append(filled.to_frame(name=col))
+        elif col_data.dtype == object or hasattr(col_data, 'cat'):
+            cardinality = col_data.nunique()
+            if 2 <= cardinality <= 20:
+                filled = col_data.fillna('unknown')
+                dummies = pd.get_dummies(filled, prefix=col, drop_first=False)
+                feature_dfs.append(dummies)
+
+    if not feature_dfs:
+        return jsonify(empty)
+
+    X = pd.concat(feature_dfs, axis=1)
+    y = df[deviation].fillna(0).astype(int)
+
+    common_idx = X.index.intersection(y.index)
+    X = X.loc[common_idx]
+    y = y.loc[common_idx]
+    n = len(y)
+
+    if n < 10 or y.nunique() < 2:
+        return jsonify(empty)
+
+    clf = DecisionTreeClassifier(
+        max_depth=3,
+        min_samples_leaf=max(5, int(0.05 * n)),
+        class_weight='balanced',
+        random_state=42
+    )
+    clf.fit(X, y)
+
+    tree_ = clf.tree_
+    col_names = X.columns.tolist()
+
+    def extract_rules(node, conditions):
+        if tree_.feature[node] == _tree.TREE_UNDEFINED:
+            prediction = int(np.argmax(tree_.value[node][0]))
+            support = int(tree_.n_node_samples[node])
+            n_pos = int(tree_.value[node][0][1]) if len(tree_.value[node][0]) > 1 else 0
+            precision = n_pos / support if support > 0 else 0.0
+            coverage = support / n
+            return [{"conditions": list(conditions), "prediction": prediction,
+                     "support": support, "precision": round(precision, 4), "coverage": round(coverage, 4)}]
+        feature_name = col_names[tree_.feature[node]]
+        threshold = float(tree_.threshold[node])
+        left_cond = conditions + [{"feature": feature_name, "op": "<=", "value": round(threshold, 4)}]
+        right_cond = conditions + [{"feature": feature_name, "op": ">", "value": round(threshold, 4)}]
+        rules = []
+        rules.extend(extract_rules(tree_.children_left[node], left_cond))
+        rules.extend(extract_rules(tree_.children_right[node], right_cond))
+        return rules
+
+    all_rules = extract_rules(0, [])
+    deviation_rules = sorted(
+        [r for r in all_rules if r["prediction"] == 1],
+        key=lambda r: r["precision"], reverse=True
+    )
+
+    importances = clf.feature_importances_
+    importance_list = sorted(
+        [{"feature": col_names[i], "importance": round(float(importances[i]), 4)}
+         for i in range(len(col_names)) if importances[i] > 0],
+        key=lambda x: x["importance"], reverse=True
+    )
+
+    return jsonify({
+        "rules": deviation_rules,
+        "feature_importance": importance_list,
+        "total_traces": n,
+        "deviation_rate": round(float(y.mean()), 4),
+        "n_features": len(col_names)
+    })
 
 
 if __name__ == '__main__':
