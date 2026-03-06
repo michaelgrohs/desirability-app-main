@@ -184,6 +184,47 @@ def reset_cache():
     last_uploaded_data["alignment_status"] = "idle"
     last_uploaded_data["alignment_error"] = None
 
+def validate_xes_log(xes_log):
+    """
+    Check that the parsed pm4py EventLog has the required fields.
+    Returns a list of human-readable error strings (empty = valid).
+    Checks all traces/events (short-circuits after first failure per field).
+    """
+    errors = []
+    missing_case_id = []
+    missing_concept = []
+    missing_timestamp = []
+
+    for i, trace in enumerate(xes_log):
+        if 'concept:name' not in trace.attributes:
+            missing_case_id.append(i)
+        for j, event in enumerate(trace):
+            if 'concept:name' not in event:
+                missing_concept.append((i, j))
+            if 'time:timestamp' not in event:
+                missing_timestamp.append((i, j))
+
+    if missing_case_id:
+        sample = missing_case_id[:3]
+        errors.append(
+            f"Missing 'case:concept:name' on {len(missing_case_id)} trace(s) "
+            f"(e.g. trace indices {sample}). Every trace must have a case ID."
+        )
+    if missing_concept:
+        sample = missing_concept[:3]
+        errors.append(
+            f"Missing 'concept:name' on {len(missing_concept)} event(s) "
+            f"(e.g. {sample}). Every event must have an activity name."
+        )
+    if missing_timestamp:
+        sample = missing_timestamp[:3]
+        errors.append(
+            f"Missing 'time:timestamp' on {len(missing_timestamp)} event(s) "
+            f"(e.g. {sample}). Every event must have a timestamp."
+        )
+    return errors
+
+
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     reset_cache()
@@ -251,6 +292,10 @@ def upload_files():
         xes_log = xes_importer.apply(xes_path)
     else:
         return jsonify({"error": "Unsupported log format"}), 400
+
+    xes_errors = validate_xes_log(xes_log)
+    if xes_errors:
+        return jsonify({"error": "Invalid XES log:\n" + "\n".join(xes_errors)}), 400
 
     last_uploaded_data['xes_log'] = xes_log
 
@@ -354,6 +399,10 @@ def upload_mine_model():
     else:
         return jsonify({"error": f"Unsupported log format: {ext}"}), 400
 
+    xes_errors = validate_xes_log(xes_log)
+    if xes_errors:
+        return jsonify({"error": "Invalid XES log:\n" + "\n".join(xes_errors)}), 400
+
     # Store everything except bpmn_path (not known yet — mining is background)
     last_uploaded_data['bpmn_path'] = None
     last_uploaded_data['xes_path'] = xes_path
@@ -433,6 +482,10 @@ def upload_declarative():
         xes_log = xes_importer.apply(xes_path)
     else:
         return jsonify({"error": "Unsupported log format"}), 400
+
+    xes_errors = validate_xes_log(xes_log)
+    if xes_errors:
+        return jsonify({"error": "Invalid XES log:\n" + "\n".join(xes_errors)}), 400
 
     last_uploaded_data['xes_log'] = xes_log
 
@@ -666,6 +719,10 @@ def upload_declarative_model():
         xes_log = log_converter.apply(log_csv)
     else:
         return jsonify({"error": "Unsupported log format"}), 400
+
+    xes_errors = validate_xes_log(xes_log)
+    if xes_errors:
+        return jsonify({"error": "Invalid XES log:\n" + "\n".join(xes_errors)}), 400
 
     last_uploaded_data['xes_log'] = xes_log
     log_df = pm4py.convert_to_dataframe(xes_log)
@@ -1533,6 +1590,94 @@ def api_deviation_rules():
         "deviation_rate": round(float(y.mean()), 4),
         "n_features": len(col_names)
     })
+
+
+@app.route('/api/ollama/models', methods=['GET'])
+def api_ollama_models():
+    import urllib.request
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = [m["name"] for m in data.get("models", [])]
+        return jsonify({"models": models, "online": True})
+    except Exception as e:
+        return jsonify({"models": [], "online": False, "error": str(e)})
+
+
+@app.route('/api/ollama/pull', methods=['POST'])
+def api_ollama_pull():
+    import urllib.request
+    data = request.get_json(force=True)
+    model = data.get('model', 'llama3.2')
+    payload = json.dumps({"name": model, "stream": False}).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "http://localhost:11434/api/pull",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return jsonify({"status": result.get("status", "success")})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/llm-suggestion', methods=['POST'])
+def api_llm_suggestion():
+    import urllib.request
+    data = request.get_json(force=True)
+    deviation = data.get('deviation', '')
+    direction = data.get('direction', 'neutral')  # 'positive', 'negative', 'neutral'
+    causal_effects = data.get('causal_effects', [])  # [{dimension, ate, criticality}]
+    top_rule = data.get('top_rule', None)  # e.g. "age > 50 AND resource = nurse"
+    model = data.get('model', 'llama3.2')
+
+    # Build a compact prompt
+    effects_lines = "\n".join(
+        f"  - {e['dimension']}: CATE={e['ate']:.3f} ({e['criticality']})"
+        for e in causal_effects if e.get('ate') is not None
+    )
+    rule_line = f"\nKey predictive pattern: {top_rule}" if top_rule else ""
+
+    if direction == 'negative':
+        action = "avoid or reduce this deviation"
+    elif direction == 'positive':
+        action = "encourage or institutionalize this deviation as a standard practice"
+    else:
+        action = "monitor this deviation without urgent intervention"
+
+    prompt = f"""You are a process improvement consultant analyzing a business process.
+
+A process deviation called "{deviation}" has been detected.
+Overall impact direction: {direction}.
+Causal effects on process dimensions:
+{effects_lines}{rule_line}
+
+Give 3 concise, actionable recommendations to {action}.
+Be specific and practical. Use bullet points. Do not repeat the input data."""
+
+    payload = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"num_predict": 300, "temperature": 0.7}
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return jsonify({"suggestion": result.get("response", "").strip()})
+    except Exception as e:
+        return jsonify({"error": f"Ollama error: {str(e)}"}), 500
 
 
 if __name__ == '__main__':
