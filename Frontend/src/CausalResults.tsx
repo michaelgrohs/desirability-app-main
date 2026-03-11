@@ -29,7 +29,12 @@ interface CausalResult {
   deviation: string;
   dimension: string;
   ate: number;
-  p_value: number;
+  p_value: number | null;
+  method?: string;           // "cate" | "direct_time_cost"
+  total_cost?: number;
+  mean_cost_violated?: number;
+  n_traces_with_cost?: number;
+  n_violations?: number;
   error?: string;
 }
 
@@ -291,9 +296,9 @@ const CausalResults: React.FC = () => {
       </Box>
 
       <Box display="flex" alignItems="center" mb={1}>
-        <Typography variant="h5">Conditional Average Treatment Effects (CATE)</Typography>
+        <Typography variant="h5">Causal Effects &amp; Direct Cost Attribution</Typography>
         <Tooltip
-          title="Each cell shows the Conditional Average Treatment Effect (CATE) of a deviation on a process dimension, with the p-value in parentheses. For binary dimensions (outcome, compliance, quality), the CATE represents the change in probability of a positive outcome. For continuous dimensions (time, costs), the CATE is the average unit change. Hover over any cell for a plain-language interpretation. Use the criticality configurator below to assign qualitative labels to CATE ranges."
+          title="Each cell shows the Conditional Average Treatment Effect (CATE) of a deviation on a process dimension, with the p-value in parentheses. For dimensions configured as 'Time-window Cost', the cell instead shows the total and average cost directly attributed to time-window violations — no statistical estimation needed. Hover over any cell for details."
           arrow
           placement="right"
         >
@@ -311,6 +316,9 @@ const CausalResults: React.FC = () => {
         </Typography>
         <Typography variant="body2" gutterBottom sx={{ mt: 1 }}>
           The <strong>p-value</strong> (in parentheses) indicates statistical significance: a smaller p-value means the estimated effect is less likely to be due to chance. A common threshold is p &lt; 0.05.
+        </Typography>
+        <Typography variant="body2" gutterBottom sx={{ mt: 1 }}>
+          For dimensions configured as <strong>Time-window Cost</strong>, no statistical estimation is needed — the cost per trace is computed directly from how much the time window was exceeded. Cells show the <strong>total cost</strong> (sum over all violations) and the average cost per violated trace.
         </Typography>
 
         {/* Annotated example cell */}
@@ -365,10 +373,17 @@ const CausalResults: React.FC = () => {
         </TableHead>
 
         <TableBody>
-          {dimensions.map((dim) => (
+          {dimensions.map((dim) => {
+            const isTimeCost = results.some(r => r.dimension === dim && r.method === "direct_time_cost");
+            return (
             <TableRow key={dim}>
               <TableCell>
                 <strong>{dim}</strong>
+                {isTimeCost && (
+                  <Typography variant="caption" sx={{ display: "block", color: "#b71c1c", fontWeight: 600 }}>
+                    Time Constraint Violation
+                  </Typography>
+                )}
               </TableCell>
 
               {deviations.map((dev) => {
@@ -388,6 +403,36 @@ const CausalResults: React.FC = () => {
                   );
                 }
 
+                // ── Direct time-cost attribution ─────────────────────────────
+                if (result.method === "direct_time_cost") {
+                  const tooltipText = result.total_cost !== undefined
+                    ? `Total cost attributed to "${dev}": ${result.total_cost!.toLocaleString('en-US', { maximumFractionDigits: 2 })} ` +
+                      `(avg per violation: ${result.mean_cost_violated!.toLocaleString('en-US', { maximumFractionDigits: 2 })}; ` +
+                      `${result.n_traces_with_cost} of ${result.n_violations} violated traces exceeded the time window)`
+                    : "";
+                  const hasCost = (result.total_cost ?? 0) > 0;
+                  return (
+                    <Tooltip key={dev} title={tooltipText} arrow placement="top">
+                      <TableCell align="center" style={{ backgroundColor: hasCost ? "rgba(211,47,47,0.15)" : "rgba(200,200,200,0.1)", minWidth: 110, cursor: "help", borderLeft: "2px solid #e57373" }}>
+                        <Typography variant="body2" sx={{ fontWeight: "bold", color: hasCost ? "#c62828" : "text.secondary" }}>
+                          {result.total_cost !== undefined
+                            ? result.total_cost.toLocaleString('en-US', { maximumFractionDigits: 2 })
+                            : "—"}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary", display: "block" }}>
+                          total cost
+                        </Typography>
+                        {result.mean_cost_violated !== undefined && result.mean_cost_violated > 0 && (
+                          <Typography variant="caption" sx={{ color: "#b71c1c", display: "block" }}>
+                            ø {result.mean_cost_violated.toLocaleString('en-US', { maximumFractionDigits: 2 })} / violation
+                          </Typography>
+                        )}
+                      </TableCell>
+                    </Tooltip>
+                  );
+                }
+
+                // ── CATE ─────────────────────────────────────────────────────
                 const bgColor = getCellColor(dim, result.ate, maxAbsEffect);
 
                 return (
@@ -406,7 +451,7 @@ const CausalResults: React.FC = () => {
                           ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                           : "-"}{" "}
                         <Typography component="span" variant="caption">
-                          ({result.p_value !== undefined ? result.p_value.toFixed(3) : "-"})
+                          ({result.p_value != null ? result.p_value.toFixed(3) : "-"})
                         </Typography>
                       </Typography>
                     </TableCell>
@@ -414,7 +459,8 @@ const CausalResults: React.FC = () => {
                 );
               })}
             </TableRow>
-          ))}
+            );
+          })}
         </TableBody>
       </Table>
 
@@ -439,6 +485,7 @@ const CausalResults: React.FC = () => {
         </Typography>
 
         {dimensions.map((dim) => {
+          const isTimeCostDim = results.some(r => r.dimension === dim && r.method === "direct_time_cost");
           const values = results
             .filter((r) => r.dimension === dim)
             .map((r) => r.ate)
@@ -549,7 +596,7 @@ const CausalResults: React.FC = () => {
 
               {/* Range Slider */}
               <Typography variant="body2" sx={{ mt: 2 }}>
-                ATE Range
+                {isTimeCostDim ? "Cost Range" : "CATE Range"}
               </Typography>
 
               <Slider

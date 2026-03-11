@@ -45,6 +45,7 @@ const WelcomePage: React.FC = () => {
   const [availableTemplates, setAvailableTemplates] = useState<string[]>([]);
   const [selectedTemplates, setSelectedTemplates] = useState<string[]>([]);
   const [minSupport, setMinSupport] = useState<number>(0.1);
+  const [minedDeclFilename, setMinedDeclFilename] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const { setContinue, setHideBack } = useBottomNav();
@@ -282,6 +283,7 @@ const WelcomePage: React.FC = () => {
 
         if (response.ok) {
           setConformanceMode('declarative');
+          if (data.decl_filename) setMinedDeclFilename(data.decl_filename);
           setIsReady(true);
         } else {
           const msg = data.error || "Upload failed";
@@ -533,6 +535,20 @@ const WelcomePage: React.FC = () => {
 
         {errorMsg && (
           <Typography color="error" variant="body2">{errorMsg}</Typography>
+        )}
+
+        {isReady && minedDeclFilename && (
+          <Box sx={{ mt: 1, mb: 1 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              component="a"
+              href={`${API_URL}/api/download-mined-decl`}
+              download={minedDeclFilename}
+            >
+              Download mined model as .decl
+            </Button>
+          </Box>
         )}
 
         {!isReady && (

@@ -56,6 +56,20 @@ interface DeviationData {
   insertions: DeviationItem[];
 }
 
+interface TimeCondition {
+  min: number;
+  max: number;
+  unit: string;
+  raw: string;
+}
+
+interface ViolationDiagnostics {
+  no_target_count: number;
+  target_condition_failed_count: number;
+  time_window_violated_count: number;
+  time_violation_details: { trace_id: string; actual_seconds: number }[];
+}
+
 interface ConstraintItem {
   constraint: string;
   type: string;
@@ -65,10 +79,29 @@ interface ConstraintItem {
   confidence: number;
   activation_condition?: string | null;
   correlation_condition?: string | null;
-  time_condition?: string | null;
+  time_condition?: TimeCondition | null;
   is_data_aware?: boolean;
+  has_time_constraint?: boolean;
   total_activations?: number;
+  violation_diagnostics?: ViolationDiagnostics;
 }
+
+const UNIT_LABELS: Record<string, string> = { s: 'seconds', m: 'minutes', h: 'hours', d: 'days' };
+
+const formatTimeCondition = (tc: TimeCondition): string => {
+  const unit = UNIT_LABELS[tc.unit] ?? tc.unit;
+  const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (tc.min === tc.max) return `exactly ${fmt(tc.min)} ${unit}`;
+  if (tc.min === 0) return `within ${fmt(tc.max)} ${unit}`;
+  return `${fmt(tc.min)} – ${fmt(tc.max)} ${unit}`;
+};
+
+const formatSeconds = (s: number): string => {
+  if (s >= 86400) return `${(s / 86400).toFixed(1)} days`;
+  if (s >= 3600)  return `${(s / 3600).toFixed(1)} hrs`;
+  if (s >= 60)    return `${(s / 60).toFixed(1)} min`;
+  return `${s.toFixed(0)} s`;
+};
 
 interface DeclarativeData {
   constraints: ConstraintItem[];
@@ -391,26 +424,36 @@ const DeviationOverview: React.FC = () => {
                         {item.operands[1] ? ` → ${item.operands[1]}` : ''}
                       </Typography>
 
-                      {/* Data condition tags */}
-                      {conformanceMode === 'declarative-model' && item.is_data_aware && (
+                      {/* Data & time condition tags */}
+                      {conformanceMode === 'declarative-model' && (item.is_data_aware || item.has_time_constraint) && (
                         <Box display="flex" flexWrap="wrap" gap={0.5} mt={0.5}>
                           {item.activation_condition && (
                             <Tooltip title={`Activation guard (on ${item.operands[0]}): ${item.activation_condition}`} arrow>
                               <Chip
-                                label={`if ${item.activation_condition.length > 40 ? item.activation_condition.slice(0, 40) + '…' : item.activation_condition}`}
+                                label={`A: ${item.activation_condition.length > 40 ? item.activation_condition.slice(0, 40) + '…' : item.activation_condition}`}
                                 size="small"
                                 variant="outlined"
-                                sx={{ fontSize: 10, borderColor: '#f57c00', color: '#e65100', maxWidth: 300 }}
+                                sx={{ fontSize: 10, borderColor: '#f57c00', color: '#e65100', maxWidth: 320 }}
                               />
                             </Tooltip>
                           )}
                           {item.correlation_condition && (
-                            <Tooltip title={`Target condition (on ${item.operands[1] || 'target'}): ${item.correlation_condition}`} arrow>
+                            <Tooltip title={`Target/correlation guard (on ${item.operands[1] || 'target'}): ${item.correlation_condition}`} arrow>
                               <Chip
-                                label={`then ${item.correlation_condition.length > 40 ? item.correlation_condition.slice(0, 40) + '…' : item.correlation_condition}`}
+                                label={`T: ${item.correlation_condition.length > 40 ? item.correlation_condition.slice(0, 40) + '…' : item.correlation_condition}`}
                                 size="small"
                                 variant="outlined"
-                                sx={{ fontSize: 10, borderColor: '#7b1fa2', color: '#6a1b9a', maxWidth: 300 }}
+                                sx={{ fontSize: 10, borderColor: '#7b1fa2', color: '#6a1b9a', maxWidth: 320 }}
+                              />
+                            </Tooltip>
+                          )}
+                          {item.time_condition && (
+                            <Tooltip title={`Time window between activation and target: ${item.time_condition.raw}`} arrow>
+                              <Chip
+                                label={`⏱ ${formatTimeCondition(item.time_condition)}`}
+                                size="small"
+                                variant="outlined"
+                                sx={{ fontSize: 10, borderColor: '#0288d1', color: '#01579b', maxWidth: 260 }}
                               />
                             </Tooltip>
                           )}
@@ -439,6 +482,58 @@ const DeviationOverview: React.FC = () => {
                         <Typography variant="caption" sx={{ color: '#9e9e9e', display: 'block', mt: 0.5 }}>
                           Never activated — constraint was not triggered in any trace. Violations are vacuous and can be disregarded.
                         </Typography>
+                      )}
+
+                      {/* Violation diagnostics breakdown */}
+                      {conformanceMode === 'declarative-model' && !neverActivated && item.violation_diagnostics && (
+                        (() => {
+                          const d = item.violation_diagnostics!;
+                          const total = d.no_target_count + d.target_condition_failed_count + d.time_window_violated_count;
+                          if (total === 0) return null;
+                          return (
+                            <Box mt={0.75} p={0.75} sx={{ background: '#fff8e1', borderRadius: 1, border: '1px solid #ffe082' }}>
+                              <Typography variant="caption" sx={{ fontWeight: 700, color: '#e65100', display: 'block', mb: 0.25 }}>
+                                Violation causes ({total} activations diagnosed):
+                              </Typography>
+                              <Box display="flex" flexWrap="wrap" gap={0.5}>
+                                {d.no_target_count > 0 && (
+                                  <Tooltip title="Target activity was not found in the required position" arrow>
+                                    <Chip
+                                      label={`No target B: ${d.no_target_count}`}
+                                      size="small"
+                                      sx={{ fontSize: 10, background: '#fce4ec', color: '#c62828', border: '1px solid #ef9a9a' }}
+                                    />
+                                  </Tooltip>
+                                )}
+                                {d.target_condition_failed_count > 0 && (
+                                  <Tooltip title="Target B occurred but the T. correlation condition was not satisfied" arrow>
+                                    <Chip
+                                      label={`T. condition failed: ${d.target_condition_failed_count}`}
+                                      size="small"
+                                      sx={{ fontSize: 10, background: '#ede7f6', color: '#4527a0', border: '1px solid #b39ddb' }}
+                                    />
+                                  </Tooltip>
+                                )}
+                                {d.time_window_violated_count > 0 && (
+                                  <Tooltip
+                                    title={
+                                      d.time_violation_details.length > 0
+                                        ? `Avg actual time: ${formatSeconds(d.time_violation_details.reduce((s, x) => s + x.actual_seconds, 0) / d.time_violation_details.length)}`
+                                        : 'Time window was exceeded'
+                                    }
+                                    arrow
+                                  >
+                                    <Chip
+                                      label={`Time window exceeded: ${d.time_window_violated_count}${item.time_condition ? ` (allowed: ${formatTimeCondition(item.time_condition)})` : ''}`}
+                                      size="small"
+                                      sx={{ fontSize: 10, background: '#e3f2fd', color: '#0d47a1', border: '1px solid #90caf9' }}
+                                    />
+                                  </Tooltip>
+                                )}
+                              </Box>
+                            </Box>
+                          );
+                        })()
                       )}
                     </Box>
                   </Box>
@@ -680,11 +775,11 @@ const DeviationOverview: React.FC = () => {
                   <TableCell>Type</TableCell>
                   <TableCell>Operand A</TableCell>
                   <TableCell>Operand B</TableCell>
-                  {conformanceMode === 'declarative-model' && <TableCell>Activation Condition</TableCell>}
-                  {conformanceMode === 'declarative-model' && <TableCell>Target Condition</TableCell>}
+                  {conformanceMode === 'declarative-model' && <TableCell>Activation (A.)</TableCell>}
+                  {conformanceMode === 'declarative-model' && <TableCell>Target (T.)</TableCell>}
+                  {conformanceMode === 'declarative-model' && <TableCell>Time Window</TableCell>}
                   {conformanceMode !== 'declarative-model' && <TableCell align="right">Support</TableCell>}
                   {conformanceMode !== 'declarative-model' && <TableCell align="right">Confidence</TableCell>}
-                  {conformanceMode === 'declarative-model' && <TableCell align="center">Data-Aware</TableCell>}
                   {conformanceMode === 'declarative-model' && <TableCell align="right">Activations</TableCell>}
                 </TableRow>
               </TableHead>
@@ -730,15 +825,19 @@ const DeviationOverview: React.FC = () => {
                           ) : <Box component="span" sx={{ color: '#bbb' }}>—</Box>}
                         </TableCell>
                       )}
-                      {conformanceMode !== 'declarative-model' && <TableCell align="right" sx={{ fontSize: 11 }}>{(c.support * 100).toFixed(1)}%</TableCell>}
-                      {conformanceMode !== 'declarative-model' && <TableCell align="right" sx={{ fontSize: 11 }}>{(c.confidence * 100).toFixed(1)}%</TableCell>}
                       {conformanceMode === 'declarative-model' && (
-                        <TableCell align="center" sx={{ fontSize: 11 }}>
-                          {c.is_data_aware
-                            ? <Chip label="yes" size="small" sx={{ fontSize: 10, height: 18, backgroundColor: '#fff3e0', color: '#e65100' }} />
-                            : <Box component="span" sx={{ color: '#bbb' }}>—</Box>}
+                        <TableCell sx={{ fontSize: 10, maxWidth: 160 }}>
+                          {c.time_condition ? (
+                            <Tooltip title={`Raw: ${c.time_condition.raw}`} arrow placement="top">
+                              <Box component="span" sx={{ color: '#01579b', cursor: 'default', whiteSpace: 'nowrap' }}>
+                                ⏱ {formatTimeCondition(c.time_condition)}
+                              </Box>
+                            </Tooltip>
+                          ) : <Box component="span" sx={{ color: '#bbb' }}>—</Box>}
                         </TableCell>
                       )}
+                      {conformanceMode !== 'declarative-model' && <TableCell align="right" sx={{ fontSize: 11 }}>{(c.support * 100).toFixed(1)}%</TableCell>}
+                      {conformanceMode !== 'declarative-model' && <TableCell align="right" sx={{ fontSize: 11 }}>{(c.confidence * 100).toFixed(1)}%</TableCell>}
                       {conformanceMode === 'declarative-model' && (
                         <TableCell align="right" sx={{ fontSize: 11, color: neverActivated ? '#9e9e9e' : undefined }}>
                           {neverActivated

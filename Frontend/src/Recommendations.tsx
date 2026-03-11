@@ -1370,6 +1370,12 @@ const Recommendations: React.FC = () => {
         ate: r.ate,
         criticality: getCriticality(r.ate, criticalityMap[r.dimension]) ?? "neutral",
       }));
+    // Collect all unique activity names from the matrix for process context
+    const allActivities = Array.from(
+      new Set(
+        matrixRows.flatMap((row) => (Array.isArray(row.activities) ? row.activities : []))
+      )
+    ).sort();
     fetch(`${API_URL}/api/llm-suggestion`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1379,6 +1385,7 @@ const Recommendations: React.FC = () => {
         causal_effects: causalEffects,
         top_rule: topRuleTexts[deviation] ?? null,
         model: selectedModel,
+        all_activities: allActivities,
       }),
     })
       .then((r) => r.json())

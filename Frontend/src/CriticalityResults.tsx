@@ -24,7 +24,11 @@ interface CausalResult {
   deviation: string;
   dimension: string;
   ate: number;
-  p_value: number;
+  p_value: number | null;
+  method?: string;
+  total_cost?: number;
+  mean_cost_violated?: number;
+  n_traces_with_cost?: number;
 }
 
 type CriticalityLevel =
@@ -98,6 +102,19 @@ const criticalityWeight = (label: CriticalityLevel | null) => {
   }
 };
 
+// Returns the parenthetical value string shown next to the criticality label
+const resultValueLabel = (r: CausalResult): string => {
+  if (r.method === "direct_time_cost") {
+    if (r.total_cost != null) {
+      return `total cost: ${r.total_cost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    return "—";
+  }
+  return r.ate != null
+    ? r.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : "–";
+};
+
 const CriticalityResults: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -143,7 +160,7 @@ const CriticalityResults: React.FC = () => {
   }, [navigate, setContinue, results, criticalityMap, priorityList]);
 
   const exportCSV = () => {
-    let csv = "Dimension,Deviation,Criticality,ATE\n";
+    let csv = "Dimension,Deviation,Criticality,Value\n";
 
     dimensions.forEach((dim) => {
       deviations.forEach((dev) => {
@@ -151,7 +168,8 @@ const CriticalityResults: React.FC = () => {
         if (!result || result.ate == null) return;
 
         const label = getCriticality(result.ate, criticalityMap[dim]);
-        csv += `${dim},${dev},${label ?? ""},${result.ate}\n`;
+        const val = result.method === "direct_time_cost" ? (result.total_cost ?? "") : result.ate;
+        csv += `${dim},${dev},${label ?? ""},${val}\n`;
       });
     });
 
@@ -184,7 +202,7 @@ const CriticalityResults: React.FC = () => {
           const result = results.find((r) => r.dimension === dim && r.deviation === dev);
           if (!result) return "";
           const label = getCriticality(result.ate, criticalityMap[dim]);
-          return `${label ?? "-"} (${result.ate != null ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "–"})`;
+          return `${label ?? "-"} (${resultValueLabel(result)})`;
         }),
       ]),
     });
@@ -310,7 +328,7 @@ const CriticalityResults: React.FC = () => {
                       fontWeight: 500,
                     }}
                   >
-                    {label ?? "-"} ({result.ate != null ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "–"})
+                    {label ?? "-"} ({resultValueLabel(result)})
                   </TableCell>
                 );
               })}

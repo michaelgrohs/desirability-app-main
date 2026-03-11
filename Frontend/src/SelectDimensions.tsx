@@ -19,6 +19,13 @@ import {
   Tooltip,
   IconButton,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  List,
+  ListItem,
+  ListItemText,
 } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
@@ -30,7 +37,7 @@ const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:1904";
 
 type Dimension = "time" | "costs" | "quality" | "outcome" | "compliance";
 
-type ComputationType = "existing" | "formula" | "rule";
+type ComputationType = "existing" | "formula" | "rule" | "time_cost";
 
 interface DimensionConfig {
   dimension: Dimension;
@@ -58,6 +65,7 @@ const computationTypeTooltips: Record<ComputationType, string> = {
   existing: "Use Existing Column: directly maps this dimension to a numeric column already present in the impact matrix. Select the column from the dropdown.",
   formula: "Formula from Column: compute a new value using a pandas-style expression over existing columns (e.g., 'duration / 3600' to convert seconds to hours). Click column name chips to insert them into the expression.",
   rule: "Binary Rule: defines the dimension as 1 (desired) or 0 (undesired) based on a condition on a column. Choose the column, an operator (e.g., 'less than'), and a threshold value. Useful for encoding binary outcomes from raw attributes.",
+  time_cost: "Time-window Cost: calculates a cost based on how much the time window of a Declare constraint was exceeded. For each trace, cost = excess_time × rate. Only available for constraints with a time window.",
 };
 
 const SelectDimensions: React.FC = () => {
@@ -69,6 +77,7 @@ const SelectDimensions: React.FC = () => {
     setSelectedDimensions,
     dimensionConfigs: configs,
     setDimensionConfigs: setConfigs,
+    conformanceMode,
   } = useFileContext();
 
   const [isComputing, setIsComputing] = useState(false);
@@ -76,18 +85,42 @@ const SelectDimensions: React.FC = () => {
   const [computeSuccess, setComputeSuccess] = useState(false);
   const [causalErrors, setCausalErrors] = useState<{ deviation: string; dimension: string; error: string }[]>([]);
   const [showNonSelected, setShowNonSelected] = useState(false);
-    const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
-    const [matrixRows, setMatrixRows] = useState<any[]>([]);
+  const [unselectedWarning, setUnselectedWarning] = useState<string[]>([]);
+  const [pendingSubmit, setPendingSubmit] = useState(false);
+  const [showDevsInFormula, setShowDevsInFormula] = useState<Record<string, boolean>>({});
+  const [matrixColumns, setMatrixColumns] = useState<string[]>([]);
+  const [matrixRows, setMatrixRows] = useState<any[]>([]);
+  const [allDeviationCols, setAllDeviationCols] = useState<Set<string>>(new Set());
+  const [timeConstraintCols, setTimeConstraintCols] = useState<{col_name: string; label: string; time_condition: any}[]>([]);
 
-    useEffect(() => {
-      fetch(`${API_URL}/api/current-impact-matrix`)
-        .then(res => res.json())
-        .then(data => {
-          setMatrixColumns(data.columns ?? []);
-          setMatrixRows(data.rows ?? []);
-        })
-        .catch(() => {});
-    }, []);
+  useEffect(() => {
+    fetch(`${API_URL}/api/current-impact-matrix`)
+      .then(res => res.json())
+      .then(data => {
+        setMatrixColumns(data.columns ?? []);
+        setMatrixRows(data.rows ?? []);
+      })
+      .catch(() => {});
+    fetch(`${API_URL}/api/deviation-overview`)
+      .then(res => res.json())
+      .then(data => {
+        // declarative / declarative-model modes return `constraints` array with a `constraint` col name
+        // BPMN mode returns `skips` / `insertions` with activity names that become "(Skip X)" / "(Insert X)" columns
+        const fromConstraints = (data.constraints ?? []).map((d: any) => d.constraint).filter(Boolean);
+        const fromSkips = (data.skips ?? []).map((d: any) => `(Skip ${d.activity})`);
+        const fromInsertions = (data.insertions ?? []).map((d: any) => `(Insert ${d.activity})`);
+        setAllDeviationCols(new Set([...fromConstraints, ...fromSkips, ...fromInsertions]));
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (conformanceMode !== 'declarative-model') return;
+    fetch(`${API_URL}/api/time-constraint-columns`)
+      .then(res => res.json())
+      .then(data => setTimeConstraintCols(data.constraints ?? []))
+      .catch(() => {});
+  }, [conformanceMode]);
 
   // ---------------------------
   // Toggle dimension selection
@@ -171,9 +204,37 @@ const SelectDimensions: React.FC = () => {
   // ---------------------------
   // Continue (configure → causal effects → navigate)
   // ---------------------------
-  const handleSubmit = async () => {
+  const handleSubmit = async (skipWarning = false) => {
     if (selectedDimensions.length === 0) return;
     setCausalErrors([]);
+
+    // Check: for time_cost dimensions, are there selected constraints not yet assigned to an entry?
+    if (!skipWarning && conformanceMode === 'declarative-model') {
+      const selectedColNames = new Set((selectedDeviations as any[]).map((d: any) => d.column));
+      const availableTimeCols = timeConstraintCols.filter(c => selectedColNames.has(c.col_name));
+
+      if (availableTimeCols.length > 0) {
+        // Collect all constraint col_names already used across all time_cost dimension entries
+        const usedConstraints = new Set<string>();
+        selectedDimensions.forEach(dim => {
+          const cfg = configs[dim];
+          if (cfg?.computationType === 'time_cost') {
+            const entries: any[] = cfg.config?.entries ?? [];
+            entries.forEach((e: any) => { if (e.constraint) usedConstraints.add(e.constraint); });
+          }
+        });
+
+        const unused = availableTimeCols
+          .filter(c => !usedConstraints.has(c.col_name))
+          .map(c => c.label);
+
+        if (unused.length > 0) {
+          setUnselectedWarning(unused);
+          setPendingSubmit(true);
+          return;
+        }
+      }
+    }
 
     const configOk = await handleComputeDimensions();
     if (!configOk) return;
@@ -409,11 +470,7 @@ const SelectDimensions: React.FC = () => {
                           {ct === "existing" ? "Use Existing Column" : ct === "formula" ? "Formula from Column" : "Binary Rule"}
                         </span>
                         <Tooltip title={computationTypeTooltips[ct]} arrow placement="right">
-                          <IconButton
-                            size="small"
-                            sx={{ ml: 0.5, p: 0.25 }}
-                            onClick={(e) => e.stopPropagation()}
-                          >
+                          <IconButton size="small" sx={{ ml: 0.5, p: 0.25 }} onClick={(e) => e.stopPropagation()}>
                             <HelpOutlineIcon sx={{ fontSize: 15, color: "text.disabled" }} />
                           </IconButton>
                         </Tooltip>
@@ -421,11 +478,28 @@ const SelectDimensions: React.FC = () => {
                     }
                   />
                 ))}
+                {conformanceMode === 'declarative-model' && dim === 'costs' && timeConstraintCols.length > 0 && (
+                  <FormControlLabel
+                    value="time_cost"
+                    control={<Radio />}
+                    label={
+                      <Box display="flex" alignItems="center">
+                        <span>Time-window Cost</span>
+                        <Tooltip title={computationTypeTooltips["time_cost"]} arrow placement="right">
+                          <IconButton size="small" sx={{ ml: 0.5, p: 0.25 }} onClick={(e) => e.stopPropagation()}>
+                            <HelpOutlineIcon sx={{ fontSize: 15, color: "text.disabled" }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    }
+                  />
+                )}
               </RadioGroup>
             </FormControl>
 
             {/* EXISTING */}
             {configs[dim]?.computationType === "existing" && (
+              <>
                 <Select
                   fullWidth
                   sx={{ mt: 2 }}
@@ -436,13 +510,18 @@ const SelectDimensions: React.FC = () => {
                     })
                   }
                 >
-
                   {matrixColumns.map(col => (
                     <MenuItem key={col} value={col}>
                       {col}
                     </MenuItem>
                   ))}
                 </Select>
+                {configs[dim]?.config?.column === "rework_count" && (
+                  <Alert severity="info" sx={{ mt: 1 }}>
+                    <strong>Note:</strong> <em>rework_count</em> merely counts activities that occur more than once in a trace (i.e. the number of extra repetitions beyond the first occurrence of each activity). It does not imply that a repetition is actually an error.
+                  </Alert>
+                )}
+              </>
             )}
 
             {/* FORMULA */}
@@ -465,28 +544,42 @@ const SelectDimensions: React.FC = () => {
                   minRows={2}
                 />
 
-                <Typography variant="caption" sx={{ mt: 1, display: "block" }}>
-                  Available columns:
-                </Typography>
+                <Box display="flex" alignItems="center" gap={1} sx={{ mt: 1 }}>
+                  <Typography variant="caption">
+                    Available columns:
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant={showDevsInFormula[dim] ? "contained" : "outlined"}
+                    color="secondary"
+                    sx={{ py: 0, fontSize: "0.7rem" }}
+                    onClick={() =>
+                      setShowDevsInFormula(prev => ({ ...prev, [dim]: !prev[dim] }))
+                    }
+                  >
+                    {showDevsInFormula[dim] ? "Hide deviation columns" : "Show deviation columns"}
+                  </Button>
+                </Box>
 
                 <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                  {matrixColumns.map((col) => (
-                    <Button
-                      key={col}
-                      size="small"
-                      variant="outlined"
-                      onClick={() => {
-                        const current = configs[dim]?.config?.expression || "";
-                        updateConfig(dim, {
-                          config: {
-                            expression: current + col
-                          }
-                        });
-                      }}
-                    >
-                      {col}
-                    </Button>
-                  ))}
+                  {matrixColumns
+                    .filter(col => showDevsInFormula[dim] || !allDeviationCols.has(col))
+                    .map((col) => (
+                      <Button
+                        key={col}
+                        size="small"
+                        variant="outlined"
+                        color={allDeviationCols.has(col) ? "secondary" : "primary"}
+                        onClick={() => {
+                          const current = configs[dim]?.config?.expression || "";
+                          updateConfig(dim, {
+                            config: { expression: current + col }
+                          });
+                        }}
+                      >
+                        {col}
+                      </Button>
+                    ))}
                 </Box>
               </>
             )}
@@ -695,6 +788,147 @@ const SelectDimensions: React.FC = () => {
             })()}
 
 
+            {/* TIME COST */}
+            {configs[dim]?.computationType === "time_cost" && (() => {
+              const selectedColNames = new Set((selectedDeviations as any[]).map((d: any) => d.column));
+              const availableTimeCols = timeConstraintCols.filter(c => selectedColNames.has(c.col_name));
+
+              const UNIT_OPTIONS = [
+                { value: "hour",  label: "per hour" },
+                { value: "day",   label: "per day"  },
+                { value: "week",  label: "per week" },
+              ];
+
+              const formatTC = (cond: any): string => {
+                if (!cond || !cond.unit) return "";
+                const u: Record<string, string> = { s: "seconds", m: "minutes", h: "hours", d: "days" };
+                const unit = u[cond.unit] ?? cond.unit;
+                const fmt = (n: number) => n?.toLocaleString("en-US", { maximumFractionDigits: 0 });
+                if (cond.min === 0) return `within ${fmt(cond.max)} ${unit}`;
+                if (cond.min === cond.max) return `exactly ${fmt(cond.min)} ${unit}`;
+                return `${fmt(cond.min)} – ${fmt(cond.max)} ${unit}`;
+              };
+
+              // Normalise: always work with entries array
+              const rawConfig = configs[dim]?.config || {};
+              const entries: any[] = Array.isArray(rawConfig.entries) && rawConfig.entries.length > 0
+                ? rawConfig.entries
+                : [{ constraint: rawConfig.constraint || "", rate: rawConfig.rate ?? "", rate_unit: rawConfig.rate_unit || "hour" }];
+
+              const setEntries = (newEntries: any[]) =>
+                updateConfig(dim, { config: { entries: newEntries } });
+
+              const updateEntry = (idx: number, patch: any) =>
+                setEntries(entries.map((e, i) => i === idx ? { ...e, ...patch } : e));
+
+              const removeEntry = (idx: number) =>
+                setEntries(entries.filter((_, i) => i !== idx));
+
+              const addEntry = () =>
+                setEntries([...entries, { constraint: "", rate: "", rate_unit: "hour" }]);
+
+              return (
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                    Total cost = <strong>sum across all entries</strong> of (excess time × rate), where excess time = max(0, actual elapsed − max allowed).
+                  </Typography>
+
+                  {entries.map((entry, idx) => {
+                    const info = availableTimeCols.find(c => c.col_name === entry.constraint);
+                    // Exclude constraints already selected in other entries
+                    const otherSelected = new Set(
+                      entries.filter((_, i) => i !== idx).map(e => e.constraint).filter(Boolean)
+                    );
+                    const entryOptions = availableTimeCols.filter(
+                      c => !otherSelected.has(c.col_name) || c.col_name === entry.constraint
+                    );
+                    return (
+                      <Box key={idx} sx={{ mb: 2, p: 1.5, border: "1px solid #e0e0e0", borderRadius: 1, background: "#fafafa" }}>
+                        <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                          <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary" }}>
+                            Constraint {idx + 1}
+                          </Typography>
+                          {entries.length > 1 && (
+                            <Button size="small" color="error" onClick={() => removeEntry(idx)} sx={{ minWidth: 0, px: 1 }}>
+                              ✕
+                            </Button>
+                          )}
+                        </Box>
+
+                        {/* Constraint selector */}
+                        <Select
+                          fullWidth
+                          size="small"
+                          displayEmpty
+                          value={entry.constraint}
+                          onChange={(e) => updateEntry(idx, { constraint: e.target.value })}
+                          sx={{ mb: 1 }}
+                        >
+                          <MenuItem value=""><em>Select constraint…</em></MenuItem>
+                          {entryOptions.map(c => (
+                            <MenuItem key={c.col_name} value={c.col_name}>
+                              <Box>
+                                <Box sx={{ fontWeight: 500 }}>{c.label}</Box>
+                                {c.time_condition && (
+                                  <Box sx={{ fontSize: 11, color: "text.secondary" }}>⏱ {formatTC(c.time_condition)}</Box>
+                                )}
+                              </Box>
+                            </MenuItem>
+                          ))}
+                        </Select>
+                        {info?.time_condition && (
+                          <Typography variant="caption" sx={{ color: "#0277bd", display: "block", mb: 1 }}>
+                            Allowed window: ⏱ {formatTC(info.time_condition)}
+                          </Typography>
+                        )}
+
+                        {/* Rate + unit */}
+                        <Box display="flex" gap={2} alignItems="flex-start">
+                          <TextField
+                            label="Cost rate"
+                            size="small"
+                            type="number"
+                            inputProps={{ min: 0, step: 0.01 }}
+                            value={entry.rate}
+                            onChange={(e) => updateEntry(idx, { rate: e.target.value })}
+                            sx={{ flex: 1 }}
+                            helperText="Cost per unit of exceeded time"
+                          />
+                          <FormControl size="small" sx={{ minWidth: 130 }}>
+                            <FormLabel sx={{ fontSize: 12, mb: 0.25 }}>Rate unit</FormLabel>
+                            <Select
+                              value={entry.rate_unit || "hour"}
+                              onChange={(e) => updateEntry(idx, { rate_unit: e.target.value })}
+                            >
+                              {UNIT_OPTIONS.map(u => (
+                                <MenuItem key={u.value} value={u.value}>{u.label}</MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        </Box>
+
+                        {entry.rate && entry.constraint && (
+                          <Typography variant="caption" sx={{ display: "block", mt: 1, color: "text.secondary" }}>
+                            cost += max(0, actual_seconds − max_allowed) / {entry.rate_unit === "week" ? "604800" : entry.rate_unit === "day" ? "86400" : "3600"} × {entry.rate}
+                          </Typography>
+                        )}
+                      </Box>
+                    );
+                  })}
+
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={addEntry}
+                    disabled={entries.length >= availableTimeCols.length}
+                    sx={{ mt: 0.5 }}
+                  >
+                    + Add constraint
+                  </Button>
+                </Box>
+              );
+            })()}
+
           </CardContent>
         </Card>
       ))}
@@ -872,6 +1106,38 @@ const SelectDimensions: React.FC = () => {
             Showing first 200 of {matrixRows.length} rows.
           </Typography>
         )}
+
+      {/* Warning dialog: unassigned time-constraint columns */}
+      <Dialog open={pendingSubmit} onClose={() => { setUnselectedWarning([]); setPendingSubmit(false); }}>
+        <DialogTitle>Some time-constrained constraints are not assigned</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" gutterBottom>
+            The following selected constraints have a time window but are not included in any cost dimension:
+          </Typography>
+          <List dense>
+            {unselectedWarning.map((label, i) => (
+              <ListItem key={i} sx={{ py: 0 }}>
+                <ListItemText primary={`⏱ ${label}`} />
+              </ListItem>
+            ))}
+          </List>
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            Do you want to proceed anyway, or go back and assign them?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setUnselectedWarning([]); setPendingSubmit(false); }}>
+            Go back
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => { setUnselectedWarning([]); setPendingSubmit(false); handleSubmit(true); }}
+          >
+            Proceed anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
 
     </Box>
   );

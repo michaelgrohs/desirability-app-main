@@ -184,6 +184,14 @@ def reset_cache():
     last_uploaded_data["alignment_status"] = "idle"
     last_uploaded_data["alignment_error"] = None
 
+def _df_to_records(df: pd.DataFrame) -> list:
+    """Convert a DataFrame to JSON-safe records, replacing NaN/Inf with null.
+    Uses pandas' own to_json (which emits null for NaN) then parses back to
+    plain Python dicts — avoids the float('nan') → invalid-JSON problem."""
+    import json as _json
+    return _json.loads(df.to_json(orient="records"))
+
+
 def validate_xes_log(xes_log):
     """
     Check that the parsed pm4py EventLog has the required fields.
@@ -334,7 +342,9 @@ def _mine_and_align_background(algorithm, noise_threshold, xes_path, upload_fold
     import subprocess
     try:
         print(f"[bg] Mining model with algorithm={algorithm}, noise_threshold={noise_threshold}", flush=True)
-        bpmn_path = os.path.join(upload_folder, f'{log_stem}_{algorithm}.bpmn')
+        mined_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mined_models')
+        os.makedirs(mined_models_dir, exist_ok=True)
+        bpmn_path = os.path.join(mined_models_dir, f'{log_stem}_{algorithm}.bpmn')
         # Use abspath so the path is correct regardless of CWD
         worker_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'process_mining', 'mine_worker.py')
         args_json = json.dumps({
@@ -656,18 +666,431 @@ def upload_declarative():
     )
     collect_data = collect_data[[c for c in ordered_cols if c in collect_data.columns]]
 
+    # Merge per-trace features
+    try:
+        trace_features = _compute_trace_features(log_df, case_col=case_col, activity_col=activity_col,
+                                                  timestamp_col=timestamp_col)
+        collect_data = collect_data.merge(
+            trace_features.rename(columns={'trace_id': 'trace_id'}),
+            left_on='trace_id', right_on='trace_id', how='left'
+        )
+    except Exception as feat_err:
+        print(f"[WARN] Could not compute trace features: {feat_err}")
+
     last_uploaded_data['deviation_matrix'] = collect_data
     last_uploaded_data['mode'] = 'declarative'
 
     print(f"Mined {len(atoms)} constraints, matrix shape: {collect_data.shape}")
+
+    # Save mined model as .decl to mined_models/
+    mined_models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mined_models')
+    os.makedirs(mined_models_dir, exist_ok=True)
+    log_stem = os.path.splitext(os.path.basename(last_uploaded_data.get('xes_path', 'log.xes')))[0].replace(' ', '_')
+    decl_filename = f"{log_stem}_mined.decl"
+    decl_save_path = os.path.join(mined_models_dir, decl_filename)
+    decl_content = _atoms_to_decl_string(atoms)
+    with open(decl_save_path, 'w', encoding='utf-8') as f:
+        f.write(decl_content)
+    last_uploaded_data['mined_decl_path'] = decl_save_path
+    print(f"Saved mined .decl to {decl_save_path}")
 
     atom_summary = atoms_df.to_dict(orient="records") if len(atoms_df) > 0 else []
 
     return jsonify({
         "message": "Declarative constraints mined successfully",
         "constraint_count": len(atoms),
-        "atom_summary": atom_summary
+        "atom_summary": atom_summary,
+        "decl_filename": decl_filename,
     })
+
+
+def _atoms_to_decl_string(atoms) -> str:
+    """
+    Serialize a list of ProcessAtom objects to Declare4Py-compatible .decl format.
+
+    Binary template line:  TemplateName[A, B] | | |
+    Unary template line:   TemplateName[A] | |
+    Cardinality templates (Existence, Absence, Exactly) append the cardinality integer
+    when > 1 (e.g. Existence2[A]).
+    """
+    _unary_types = {"Existence", "Absence", "Exactly", "Init", "End"}
+    _cardinality_types = {"Existence", "Absence", "Exactly"}
+
+    activities: set = set()
+    for atom in atoms:
+        for op in atom.operands:
+            activities.add(op)
+
+    lines = []
+    for act in sorted(activities):
+        lines.append(f"activity {act}")
+    lines.append("")
+
+    for atom in atoms:
+        ttype = atom.atom_type
+        ops = atom.operands
+        cardinality = getattr(atom, 'cardinality', 1)
+
+        # Append cardinality suffix when > 1 for supported templates
+        type_str = ttype
+        if ttype in _cardinality_types and isinstance(cardinality, int) and cardinality > 1:
+            type_str = f"{ttype}{cardinality}"
+
+        if len(ops) >= 2:
+            lines.append(f"{type_str}[{ops[0]}, {ops[1]}] | | |")
+        elif len(ops) == 1:
+            lines.append(f"{type_str}[{ops[0]}] | |")
+
+    return "\n".join(lines)
+
+
+def _compute_trace_features(log_df: pd.DataFrame, case_col: str = 'case:concept:name',
+                             activity_col: str = 'concept:name',
+                             timestamp_col: str = 'time:timestamp',
+                             resource_col: str = None) -> pd.DataFrame:
+    """
+    Compute per-trace features from an event-log DataFrame.
+
+    Columns returned (indexed by case_col value):
+      event_count                 – total events in the trace
+      rework_count                – sum of (occurrences - 1) per repeated activity
+                                    (i.e. how many extra repetitions exist beyond the first)
+      max_inter_event_gap_seconds – longest gap between consecutive events (seconds)
+      avg_inter_event_gap_seconds – mean gap between consecutive events (seconds)
+      unique_resource_count       – number of distinct resource values observed
+    """
+    features = pd.DataFrame({'trace_id': log_df[case_col].unique()})
+    features = features.set_index('trace_id')
+
+    # event_count
+    features['event_count'] = log_df.groupby(case_col)[activity_col].count()
+
+    # rework_count: repeated activity occurrences beyond the first
+    features['rework_count'] = (
+        log_df.groupby(case_col)[activity_col]
+        .apply(lambda x: int((x.value_counts() - 1).clip(lower=0).sum()))
+    )
+
+    # inter-event gap metrics (require timestamps)
+    if timestamp_col in log_df.columns:
+        log_sorted = log_df.sort_values([case_col, timestamp_col]).copy()
+        log_sorted['_gap_s'] = (
+            log_sorted.groupby(case_col)[timestamp_col]
+            .diff()
+            .dt.total_seconds()
+        )
+        features['max_inter_event_gap_seconds'] = log_sorted.groupby(case_col)['_gap_s'].max()
+        features['avg_inter_event_gap_seconds'] = log_sorted.groupby(case_col)['_gap_s'].mean()
+    else:
+        features['max_inter_event_gap_seconds'] = float('nan')
+        features['avg_inter_event_gap_seconds'] = float('nan')
+
+    # unique_resource_count
+    if resource_col and resource_col in log_df.columns:
+        features['unique_resource_count'] = log_df.groupby(case_col)[resource_col].nunique()
+    else:
+        # Try common resource column names
+        for rc in ('org:resource', 'org:group', 'Resource'):
+            if rc in log_df.columns:
+                features['unique_resource_count'] = log_df.groupby(case_col)[rc].nunique()
+                break
+        else:
+            features['unique_resource_count'] = float('nan')
+
+    return features.reset_index().rename(columns={'trace_id': 'trace_id'})
+
+
+def _diagnose_declare_violations(declare_model, d4py_log, violations_df, case_ids_ordered):
+    """
+    For each binary constraint that has violations, for each violated trace,
+    determine the root cause of each unfulfilled activation:
+      - no_target: target activity B never appeared in the required position
+      - target_condition_failed: B appeared but the T. correlation condition failed for all candidates
+      - time_window_violated: B appeared, correlation passed, but the time window was not met
+
+    Returns (diagnostics, trace_time_deltas):
+      diagnostics: dict keyed by serialized constraint string:
+        {
+          'no_target_count': int,
+          'target_condition_failed_count': int,
+          'time_window_violated_count': int,
+          'time_violation_details': [{'trace_id': str, 'actual_seconds': float}, ...]  (capped at 50)
+        }
+      trace_time_deltas: dict keyed by constraint string → {trace_id: actual_seconds}
+        (only entries for time-window-violated traces; actual_seconds = elapsed time of the
+         worst (longest) unfulfilled activation for that trace)
+    """
+    from datetime import timedelta
+    from Declare4Py.ProcessModels.DeclareModel import DeclareModelConditionParserUtility
+
+    _glob = {'__builtins__': None}
+    parser = DeclareModelConditionParserUtility()
+
+    pm4py_log = d4py_log.get_log()
+    activity_key = d4py_log.activity_key or 'concept:name'
+
+    # Build case_id -> list-of-events map
+    trace_map = {}
+    for trace in pm4py_log:
+        cid = trace.attributes.get('concept:name', '')
+        trace_map[str(cid)] = list(trace)
+
+    # Map serialized constraint string -> declare_model.constraints[i]
+    model_constraints = declare_model.get_decl_model_constraints()
+    constraint_dict_map = {}
+    for idx, col in enumerate(model_constraints):
+        if idx < len(declare_model.constraints):
+            constraint_dict_map[str(col)] = declare_model.constraints[idx]
+
+    # Build a positional index -> case_id mapping for numeric-indexed violations_df
+    index_vals = list(violations_df.index)
+    # Determine if index is case IDs or integers
+    index_is_case_ids = all(str(v) in trace_map for v in index_vals[:5]) if index_vals else False
+
+    diagnostics = {}
+    trace_time_deltas = {}  # constraint_col -> {trace_id: actual_seconds (worst activation)}
+
+    for col in violations_df.columns:
+        col_str = str(col)
+        cdict = constraint_dict_map.get(col_str)
+        if cdict is None:
+            continue
+        template = cdict['template']
+        if not template.is_binary:
+            continue
+
+        activities = cdict['activities']
+        act_A, act_B = activities[0], activities[1]
+        conditions = cdict['condition']
+        act_cond_str  = conditions[0] if len(conditions) > 0 else ""
+        corr_cond_str = conditions[1] if len(conditions) > 1 else ""
+        time_cond_str = conditions[-1] if conditions else ""
+
+        try:
+            activation_rules = parser.parse_data_cond(act_cond_str)
+            correlation_rules = parser.parse_data_cond(corr_cond_str)
+            time_rule         = parser.parse_time_cond(time_cond_str)
+        except SyntaxError:
+            continue
+
+        no_target_count   = 0
+        corr_failed_count = 0
+        time_viol_count   = 0
+        time_viol_details = []
+        col_trace_deltas  = {}  # trace_id -> max actual_seconds for this constraint
+
+        def _record_time_viol(cid, delta_s):
+            nonlocal time_viol_count
+            time_viol_count += 1
+            if len(time_viol_details) < 50:
+                time_viol_details.append({'trace_id': cid, 'actual_seconds': delta_s})
+            # keep the worst (longest) elapsed time per trace
+            if delta_s > col_trace_deltas.get(cid, 0):
+                col_trace_deltas[cid] = delta_s
+
+        tname = template.templ_str.replace(' ', '')
+
+        # Rows in violations_df with a violation for this constraint
+        col_series = violations_df[col]
+        violated_indices = col_series[col_series > 0].index.tolist()
+
+        for idx_val in violated_indices:
+            # Resolve to case_id string
+            if index_is_case_ids:
+                case_id = str(idx_val)
+            else:
+                # Numeric index — map to case_ids_ordered positionally
+                pos = int(idx_val)
+                case_id = str(case_ids_ordered[pos]) if pos < len(case_ids_ordered) else None
+            if case_id is None:
+                continue
+            events = trace_map.get(case_id)
+            if not events:
+                continue
+
+            # ----------------------------------------------------------------
+            # Chain Response / Alternate Response  — A then immediately B
+            # ----------------------------------------------------------------
+            if tname in ('ChainResponse', 'AlternateResponse'):
+                for i, event in enumerate(events):
+                    if event[activity_key] != act_A:
+                        continue
+                    locl = {'A': event}
+                    try:
+                        if not eval(activation_rules, _glob, locl):
+                            continue
+                    except Exception:
+                        continue
+                    # activation found — next event must be B
+                    if i >= len(events) - 1:
+                        no_target_count += 1
+                        continue
+                    nxt = events[i + 1]
+                    if nxt[activity_key] != act_B:
+                        no_target_count += 1
+                        continue
+                    locl2 = {'A': event, 'T': nxt, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                    try:
+                        corr_ok = eval(correlation_rules, _glob, locl2)
+                    except Exception:
+                        corr_ok = True
+                    if not corr_ok:
+                        corr_failed_count += 1
+                        continue
+                    try:
+                        time_ok = eval(time_rule, _glob, locl2)
+                    except Exception:
+                        time_ok = True
+                    if not time_ok:
+                        try:
+                            delta_s = abs((nxt['time:timestamp'] - event['time:timestamp']).total_seconds())
+                            _record_time_viol(case_id, delta_s)
+                        except Exception:
+                            _record_time_viol(case_id, 0.0)
+
+            # ----------------------------------------------------------------
+            # Response / Responded Existence — A then eventually B
+            # ----------------------------------------------------------------
+            elif tname in ('Response', 'RespondedExistence', 'AlternateResponse'):
+                # Replay to find still-pending activations at trace end
+                pendings = []
+                for i, event in enumerate(events):
+                    if event[activity_key] == act_A:
+                        locl = {'A': event}
+                        try:
+                            if eval(activation_rules, _glob, locl):
+                                pendings.append((i, event))
+                        except Exception:
+                            pass
+                    if pendings and event[activity_key] == act_B:
+                        for pidx, (ai, aev) in reversed(list(enumerate(pendings))):
+                            locl2 = {'A': aev, 'T': event, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                            try:
+                                corr_ok = eval(correlation_rules, _glob, locl2)
+                                time_ok = eval(time_rule, _glob, locl2)
+                            except Exception:
+                                corr_ok = time_ok = True
+                            if corr_ok and time_ok:
+                                pendings.pop(pidx)
+                                break
+                # Each remaining pending is a violation; diagnose each
+                for ai, aev in pendings:
+                    future_Bs = [(j, events[j]) for j in range(ai + 1, len(events))
+                                 if events[j][activity_key] == act_B]
+                    if not future_Bs:
+                        no_target_count += 1
+                        continue
+                    any_corr = False
+                    for bj, bev in future_Bs:
+                        locl2 = {'A': aev, 'T': bev, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                        try:
+                            corr_ok = eval(correlation_rules, _glob, locl2)
+                        except Exception:
+                            corr_ok = True
+                        if corr_ok:
+                            any_corr = True
+                    if not any_corr:
+                        corr_failed_count += 1
+                    else:
+                        # corr passed for some B but time failed — record worst delta
+                        for bj, bev in future_Bs:
+                            locl2 = {'A': aev, 'T': bev, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                            try:
+                                if eval(correlation_rules, _glob, locl2):
+                                    delta_s = abs((bev['time:timestamp'] - aev['time:timestamp']).total_seconds())
+                                    _record_time_viol(case_id, delta_s)
+                                    break
+                            except Exception:
+                                pass
+
+            # ----------------------------------------------------------------
+            # Chain Precedence / Alternate Precedence — B immediately preceded by A
+            # ----------------------------------------------------------------
+            elif tname in ('ChainPrecedence', 'AlternatePrecedence'):
+                for i, event in enumerate(events):
+                    if event[activity_key] != act_B:
+                        continue
+                    locl = {'A': event}
+                    try:
+                        if not eval(activation_rules, _glob, locl):
+                            continue
+                    except Exception:
+                        continue
+                    if i == 0:
+                        no_target_count += 1
+                        continue
+                    prev = events[i - 1]
+                    if prev[activity_key] != act_A:
+                        no_target_count += 1
+                        continue
+                    locl2 = {'A': event, 'T': prev, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                    try:
+                        corr_ok = eval(correlation_rules, _glob, locl2)
+                    except Exception:
+                        corr_ok = True
+                    if not corr_ok:
+                        corr_failed_count += 1
+                        continue
+                    try:
+                        time_ok = eval(time_rule, _glob, locl2)
+                    except Exception:
+                        time_ok = True
+                    if not time_ok:
+                        try:
+                            delta_s = abs((prev['time:timestamp'] - event['time:timestamp']).total_seconds())
+                            _record_time_viol(case_id, delta_s)
+                        except Exception:
+                            _record_time_viol(case_id, 0.0)
+
+            # ----------------------------------------------------------------
+            # Precedence — B preceded by some A anywhere before
+            # ----------------------------------------------------------------
+            elif tname == 'Precedence':
+                for i, event in enumerate(events):
+                    if event[activity_key] != act_B:
+                        continue
+                    locl = {'A': event}
+                    try:
+                        if not eval(activation_rules, _glob, locl):
+                            continue
+                    except Exception:
+                        continue
+                    prior_As = [(j, events[j]) for j in range(i) if events[j][activity_key] == act_A]
+                    if not prior_As:
+                        no_target_count += 1
+                        continue
+                    any_corr = False
+                    for aj, aev in prior_As:
+                        locl2 = {'A': event, 'T': aev, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                        try:
+                            corr_ok = eval(correlation_rules, _glob, locl2)
+                        except Exception:
+                            corr_ok = True
+                        if corr_ok:
+                            any_corr = True
+                    if not any_corr:
+                        corr_failed_count += 1
+                    else:
+                        for aj, aev in prior_As:
+                            locl2 = {'A': event, 'T': aev, 'timedelta': timedelta, 'abs': abs, 'float': float}
+                            try:
+                                if eval(correlation_rules, _glob, locl2):
+                                    delta_s = abs((aev['time:timestamp'] - event['time:timestamp']).total_seconds())
+                                    _record_time_viol(case_id, delta_s)
+                                    break
+                            except Exception:
+                                pass
+
+        diagnostics[col_str] = {
+            'no_target_count': no_target_count,
+            'target_condition_failed_count': corr_failed_count,
+            'time_window_violated_count': time_viol_count,
+            'time_violation_details': time_viol_details,
+        }
+        if col_trace_deltas:
+            trace_time_deltas[col_str] = col_trace_deltas
+
+    return diagnostics, trace_time_deltas
 
 
 @app.route('/upload-declarative-model', methods=['POST'])
@@ -756,13 +1179,6 @@ def upload_declarative_model():
     except Exception:
         activations_per_constraint = {}
 
-    # Build a mapping serialized_constraint_str → constraint_dict for data conditions
-    constraint_map = {
-        declare_model.serialized_constraints[i]: declare_model.constraints[i]
-        for i in range(len(declare_model.constraints))
-        if i < len(declare_model.serialized_constraints)
-    }
-
     # Build binary violation matrix aligned to case_ids_ordered
     violations_binary = (violations_df > 0).astype(int)
 
@@ -809,8 +1225,38 @@ def upload_declarative_model():
     ordered_cols = ['trace_id', 'trace_duration_seconds', 'activities'] + constraint_cols
     collect_data = collect_data[[c for c in ordered_cols if c in collect_data.columns]]
 
+    # Merge per-trace features
+    try:
+        trace_features = _compute_trace_features(log_df, case_col=case_col, activity_col=activity_col,
+                                                  timestamp_col=timestamp_col)
+        collect_data = collect_data.merge(
+            trace_features,
+            left_on='trace_id', right_on='trace_id', how='left'
+        )
+    except Exception as feat_err:
+        print(f"[WARN] Could not compute trace features: {feat_err}")
+
     last_uploaded_data['deviation_matrix'] = collect_data
     last_uploaded_data['mode'] = 'declarative-model'
+
+    # Run per-violation diagnostics (T. condition vs time window)
+    print("Running per-violation diagnostics...")
+    try:
+        violation_diagnostics, trace_time_deltas = _diagnose_declare_violations(
+            declare_model, d4py_log, violations_df, case_ids_ordered
+        )
+    except Exception as diag_err:
+        print(f"[WARN] Violation diagnostics failed: {diag_err}")
+        import traceback as tb
+        tb.print_exc()
+        violation_diagnostics, trace_time_deltas = {}, {}
+    last_uploaded_data['violation_diagnostics'] = violation_diagnostics
+    last_uploaded_data['trace_time_deltas'] = trace_time_deltas
+    print(f"Diagnostics done for {len(violation_diagnostics)} constraints.")
+    for k, v in violation_diagnostics.items():
+        total = v['no_target_count'] + v['target_condition_failed_count'] + v['time_window_violated_count']
+        if total > 0:
+            print(f"  {k[:60]}: no_target={v['no_target_count']} corr_fail={v['target_condition_failed_count']} time_viol={v['time_window_violated_count']}")
 
     # Store parsed constraint info for API responses
     decl_constraint_info = []
@@ -823,33 +1269,68 @@ def upload_declarative_model():
             ctype = str(col)
             ops = []
 
-        # Extract data conditions from the parsed constraint dict
-        cdict = constraint_map.get(col, {})
-        conditions = cdict.get('condition', [])
-        is_binary = cdict.get('template') and getattr(cdict['template'], 'is_binary', False)
+        # Parse conditions directly from the serialized constraint string (the column name).
+        # Format: "Type[A, B] |act_cond |corr_cond |time_cond"
+        # Splitting on ' |' gives: ['Type[A, B]', 'act_cond', 'corr_cond', 'time_cond']
+        col_parts = str(col).split(' |')
+        raw_conds = [p.strip() for p in col_parts[1:]]  # skip the "Type[A, B]" header
 
-        activation_cond = conditions[0].strip() if len(conditions) > 0 else ""
-        # For binary templates condition[1] is the correlation/target condition; for unary it doesn't exist
-        if is_binary and len(conditions) > 2:
-            correlation_cond = conditions[1].strip()
+        # Binary = two operands; unary = one operand
+        is_binary = len(ops) == 2
+
+        if is_binary:
+            activation_cond  = raw_conds[0] if len(raw_conds) > 0 else ""
+            correlation_cond = raw_conds[1] if len(raw_conds) > 1 else ""
+            time_cond        = raw_conds[2] if len(raw_conds) > 2 else ""
         else:
+            activation_cond  = raw_conds[0] if len(raw_conds) > 0 else ""
             correlation_cond = ""
-        # Time condition: last element (may be a time range string like "92,14473,s")
-        time_cond = conditions[-1].strip() if len(conditions) > 0 else ""
+            time_cond        = raw_conds[1] if len(raw_conds) > 1 else ""
+
+        # Guard: if correlation_cond looks like a time pattern, it belongs in time_cond
+        _time_pat = re.compile(r'^[\d.]+,[\d.]+(,\s*(s|m|h|d))?$', re.IGNORECASE)
+        if correlation_cond and _time_pat.match(correlation_cond):
+            time_cond = correlation_cond
+            correlation_cond = ""
 
         total_activations = int(activations_per_constraint.get(col, 0))
 
+        # Parse time condition string "min,max,unit" → structured dict
+        parsed_time = None
+        if time_cond:
+            time_parts = time_cond.split(',')
+            if len(time_parts) == 3:
+                try:
+                    parsed_time = {
+                        'min': float(time_parts[0]),
+                        'max': float(time_parts[1]),
+                        'unit': time_parts[2].strip(),
+                        'raw': time_cond,
+                    }
+                except ValueError:
+                    parsed_time = {'raw': time_cond}
+
+        diag = violation_diagnostics.get(str(col), {})
         decl_constraint_info.append({
             'col_name': col,
             'type': ctype,
             'operands': ops,
             'activation_condition': activation_cond if activation_cond else None,
             'correlation_condition': correlation_cond if correlation_cond else None,
-            'time_condition': time_cond if time_cond else None,
+            'time_condition': parsed_time,
             'is_data_aware': bool(activation_cond or correlation_cond),
+            'has_time_constraint': parsed_time is not None,
             'total_activations': total_activations,
+            'violation_diagnostics': diag,
         })
     last_uploaded_data['decl_constraint_info'] = decl_constraint_info
+
+    # Debug: show parsed conditions for all constraints
+    for info in decl_constraint_info:
+        print(f"  [decl] {info['type']} {info['operands']}"
+              f"  act={info['activation_condition']!r}"
+              f"  corr={info['correlation_condition']!r}"
+              f"  time={info['time_condition']}")
 
     print(f"Uploaded .decl model: {len(model_constraints)} constraints, {len(case_ids_ordered)} traces, matrix shape: {collect_data.shape}")
 
@@ -858,6 +1339,33 @@ def upload_declarative_model():
         "constraint_count": len(model_constraints),
         "trace_count": len(case_ids_ordered),
     })
+
+
+@app.route('/api/time-constraint-columns', methods=['GET'])
+def time_constraint_columns():
+    """Return a list of constraint columns that have a time window, for use in time-cost dimension config."""
+    decl_info = last_uploaded_data.get('decl_constraint_info', [])
+    result = []
+    for info in decl_info:
+        if info.get('has_time_constraint'):
+            tc = info.get('time_condition', {}) or {}
+            result.append({
+                'col_name': info['col_name'],
+                'label': f"{info['type']}[{', '.join(info['operands'])}]",
+                'time_condition': tc,
+            })
+    return jsonify({'constraints': result})
+
+
+@app.route('/api/download-mined-decl', methods=['GET'])
+def download_mined_decl():
+    """Download the .decl file saved from the last declarative (ProcessAtoms) mining run."""
+    path = last_uploaded_data.get('mined_decl_path')
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": "No mined .decl file available. Run declarative mining first."}), 404
+    directory = os.path.dirname(path)
+    filename = os.path.basename(path)
+    return send_from_directory(directory, filename, as_attachment=True)
 
 
 def get_cached_impact_matrix():
@@ -896,6 +1404,14 @@ def get_cached_deviation_matrix():
 
         df, labels = build_trace_deviation_matrix_df(log, aligned_traces)
 
+        # Merge per-trace features
+        try:
+            log_df_bpmn = pm4py.convert_to_dataframe(log)
+            trace_features = _compute_trace_features(log_df_bpmn)
+            df = df.merge(trace_features, left_on='trace_id', right_on='trace_id', how='left')
+        except Exception as feat_err:
+            print(f"[WARN] Could not compute trace features (BPMN): {feat_err}")
+
         last_uploaded_data["deviation_matrix"] = df
         last_uploaded_data["deviation_labels"] = labels
 
@@ -916,7 +1432,7 @@ def api_preview_matrix():
 
     return jsonify({
         "columns": list(sample_df.columns),
-        "rows": sample_df.to_dict(orient="records")
+        "rows": _df_to_records(sample_df)
     })
 
 
@@ -943,7 +1459,9 @@ def deviation_overview():
                 "correlation_condition": info.get('correlation_condition'),
                 "time_condition": info.get('time_condition'),
                 "is_data_aware": info.get('is_data_aware', False),
+                "has_time_constraint": info.get('has_time_constraint', False),
                 "total_activations": info.get('total_activations', 0),
+                "violation_diagnostics": info.get('violation_diagnostics', {}),
             })
         return jsonify({"constraints": constraints})
 
@@ -1014,7 +1532,7 @@ def api_deviation_matrix_preview(preview=False):
 
     return jsonify({
         "columns": list(preview_df.columns),
-        "rows": preview_df.to_dict(orient="records"),
+        "rows": _df_to_records(preview_df),
         "total_rows": df.shape[0],
         "total_columns": df.shape[1]
     })
@@ -1033,7 +1551,7 @@ def get_current_impact_matrix():
 
     return jsonify({
         "columns": list(df.columns),
-        "rows": df.to_dict(orient="records"),
+        "rows": _df_to_records(df),
         "total_rows": df.shape[0],
         "total_columns": df.shape[1]
     })
@@ -1179,8 +1697,68 @@ def configure_dimensions():
 
                 return jsonify({"error": f"Invalid rule: {str(e)}"}), 400
 
+        elif comp_type == "time_cost":
+            # Supports multiple entries: config = {entries: [{constraint, rate, rate_unit}, ...]}
+            # Legacy single-entry format also supported for backwards compat.
+            raw_entries = config.get("entries")
+            if raw_entries and isinstance(raw_entries, list):
+                entries = raw_entries
+            else:
+                # legacy single-entry
+                entries = [{"constraint": config.get("constraint", ""), "rate": config.get("rate"), "rate_unit": config.get("rate_unit", "hour")}]
+
+            entries = [e for e in entries if e.get("constraint") and e.get("rate") is not None]
+            if not entries:
+                return jsonify({"error": f"No valid constraint entries for time-cost dimension '{dimension}'"}), 400
+
+            decl_info = last_uploaded_data.get('decl_constraint_info', [])
+            trace_time_deltas = last_uploaded_data.get('trace_time_deltas', {})
+            _UNIT_S = {'s': 1.0, 'm': 60.0, 'h': 3600.0, 'd': 86400.0}
+            _RATE_S = {'hour': 3600.0, 'day': 86400.0, 'week': 604800.0}
+
+            # Pre-compute per-entry parameters
+            entry_params = []
+            for e in entries:
+                constraint_col = e["constraint"]
+                try:
+                    rate = float(e["rate"])
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"Rate must be a number for dimension '{dimension}'"}), 400
+                rate_unit = e.get("rate_unit", "hour")
+                unit_seconds = _RATE_S.get(rate_unit, 3600.0)
+
+                time_max_s = None
+                for info in decl_info:
+                    if info['col_name'] == constraint_col:
+                        tc = info.get('time_condition')
+                        if tc and 'max' in tc and 'unit' in tc:
+                            time_max_s = float(tc['max']) * _UNIT_S.get(tc['unit'], 1.0)
+                        break
+
+                per_trace = trace_time_deltas.get(constraint_col, {})
+                entry_params.append((per_trace, time_max_s, unit_seconds, rate))
+
+            def compute_time_cost(row):
+                tid = str(row.get('trace_id', ''))
+                total = 0.0
+                for per_trace, time_max_s, unit_seconds, rate in entry_params:
+                    actual_s = per_trace.get(tid)
+                    if actual_s is None:
+                        continue
+                    excess_s = max(0.0, actual_s - time_max_s) if time_max_s is not None else actual_s
+                    total += (excess_s / unit_seconds) * rate
+                return total
+
+            df[dimension] = df.apply(compute_time_cost, axis=1)
+
     # ✅ store result inside your cache dict instead of global variable
     last_uploaded_data["impact_matrix"] = df
+
+    # Store computation type per dimension so compute_causal_effects can handle special cases
+    dim_comp_types = last_uploaded_data.get("dim_comp_types", {})
+    for dim_cfg in dimension_configs:
+        dim_comp_types[dim_cfg["dimension"]] = dim_cfg.get("computationType", "existing")
+    last_uploaded_data["dim_comp_types"] = dim_comp_types
 
     return jsonify({
         "status": "success",
@@ -1208,6 +1786,7 @@ def compute_causal_effects():
     print("Columns:", df.columns.tolist())
 
     results = []
+    dim_comp_types = last_uploaded_data.get("dim_comp_types", {})
 
     for dim in selected_dimensions:
         for dev in selected_deviations:
@@ -1216,6 +1795,46 @@ def compute_causal_effects():
             if dev not in df.columns or dim not in df.columns:
                 continue
 
+            comp_type = dim_comp_types.get(dim, "existing")
+
+            # ── Direct attribution for time-cost dimensions ──────────────────
+            if comp_type == "time_cost":
+                try:
+                    cost_col = df[dim].fillna(0.0)
+                    violated = df[dev] == 1
+                    cost_when_violated = cost_col[violated]
+                    cost_when_not = cost_col[~violated]
+
+                    mean_cost_violated = float(cost_when_violated.mean()) if len(cost_when_violated) else 0.0
+                    mean_cost_not = float(cost_when_not.mean()) if len(cost_when_not) else 0.0
+                    total_cost = float(cost_when_violated.sum())
+                    n_traces_with_cost = int((cost_when_violated > 0).sum())
+                    n_violations = int(violated.sum())
+
+                    # ATE = mean difference (for consistent use in criticality + sorting)
+                    ate = mean_cost_violated - mean_cost_not
+
+                    results.append({
+                        "deviation": dev,
+                        "dimension": dim,
+                        "ate": ate,
+                        "p_value": None,
+                        "method": "direct_time_cost",
+                        "total_cost": total_cost,
+                        "mean_cost_violated": mean_cost_violated,
+                        "n_traces_with_cost": n_traces_with_cost,
+                        "n_violations": n_violations,
+                    })
+                    print(f"[time_cost] {dim} × {dev}: ate={ate:.2f} total={total_cost:.2f} n={n_traces_with_cost}")
+                except Exception as e:
+                    results.append({
+                        "deviation": dev,
+                        "dimension": dim,
+                        "error": f"[{dim} × {dev}] {type(e).__name__}: {str(e)}"
+                    })
+                continue
+
+            # ── CATE via DoWhy (all other computation types) ─────────────────
             graph = f'digraph {{ "{dev}" -> "{dim}" }}'
 
             try:
@@ -1242,9 +1861,9 @@ def compute_causal_effects():
                     "deviation": dev,
                     "dimension": dim,
                     "ate": float(estimate.value),
-                    "p_value": float(significance["p_value"]) if significance else None
+                    "p_value": float(significance["p_value"]) if significance else None,
+                    "method": "cate",
                 })
-
 
             except Exception as e:
                 results.append({
@@ -1441,6 +2060,7 @@ def api_model_content():
                 "correlation_condition": c.get('correlation_condition'),
                 "time_condition": c.get('time_condition'),
                 "is_data_aware": c.get('is_data_aware', False),
+                "has_time_constraint": c.get('has_time_constraint', False),
                 "total_activations": c.get('total_activations', 0),
             }
             for c in decl_constraint_info
@@ -1634,6 +2254,7 @@ def api_llm_suggestion():
     causal_effects = data.get('causal_effects', [])  # [{dimension, ate, criticality}]
     top_rule = data.get('top_rule', None)  # e.g. "age > 50 AND resource = nurse"
     model = data.get('model', 'llama3.2')
+    all_activities = data.get('all_activities', [])  # list of all unique activity names in the log
 
     # Build a compact prompt
     effects_lines = "\n".join(
@@ -1649,21 +2270,31 @@ def api_llm_suggestion():
     else:
         action = "monitor this deviation without urgent intervention"
 
-    prompt = f"""You are a process improvement consultant analyzing a business process.
+    activities_block = ""
+    if all_activities:
+        activities_list = ", ".join(f'"{a}"' for a in all_activities[:80])  # cap at 80 to avoid token overflow
+        activities_block = f"""
+All activity names observed in the process log:
+{activities_list}
 
+Step 1 — Infer the process domain: Based on the activity names above, identify what kind of real-world process this likely is (e.g. healthcare, logistics, finance, IT service management, manufacturing). Look at the nouns (objects) and verbs (actions) in the activity names to reason about the domain and the process flow.
+"""
+
+    prompt = f"""You are a process improvement consultant analyzing a business process.
+{activities_block}
 A process deviation called "{deviation}" has been detected.
 Overall impact direction: {direction}.
 Causal effects on process dimensions:
 {effects_lines}{rule_line}
 
-Give 3 concise, actionable recommendations to {action}.
-Be specific and practical. Use bullet points. Do not repeat the input data."""
+Step 2 — Give 3 concise, actionable recommendations to {action}.
+Ground your recommendations in the inferred process domain and the specific activities involved. Be specific and practical. Use bullet points. Do not repeat the input data."""
 
     payload = json.dumps({
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_predict": 300, "temperature": 0.7}
+        "options": {"num_predict": 500, "temperature": 0.7}
     }).encode("utf-8")
 
     try:
