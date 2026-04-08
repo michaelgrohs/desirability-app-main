@@ -55,6 +55,8 @@ from pm4py.objects.log.importer.xes import importer as xes_importer
 
 
 import traceback
+import re
+import tempfile
 from sklearn.tree import DecisionTreeClassifier, _tree
 
 app = Flask(__name__)
@@ -190,6 +192,157 @@ def _df_to_records(df: pd.DataFrame) -> list:
     plain Python dicts — avoids the float('nan') → invalid-JSON problem."""
     import json as _json
     return _json.loads(df.to_json(orient="records"))
+
+
+def _fix_decl_file(path: str) -> str:
+    """
+    Normalise a .decl file for Declare4Py compatibility.
+
+    Known incompatibilities handled:
+
+    1. Activity names containing colons (e.g. "SRM: Created").
+       Declare4Py's is_event_name_definition only allows [\\w ], so any
+       "activity X: Y" line is misinterpreted as an attribute-value assignment
+       and raises ValueError / KeyError.
+       Fix: replace ':' with '-' in every activity name that contains one,
+       applying the same substitution consistently inside constraint brackets.
+
+    2. Duplicate activity declarations (same name declared twice).
+       Fix: keep only the first occurrence.
+
+    3. Inline attribute definitions on the activity line:
+       "activity SRM: integer between 0 and 100"
+       These are a third-party format variant.  They are rewritten as:
+           activity SRM
+           bind SRM: integer between 0 and 100
+       Note: this case is distinguished from (1) by checking whether the
+       right-hand side looks like a Declare4Py attribute type spec.
+
+    Returns the (possibly new) path to a fixed temp file, or the original
+    path unchanged if no modifications were needed.
+    """
+    _ATTR_TYPE_RE = re.compile(
+        r'^(integer\b|float\b|enum\b|categorical\b|true\b|false\b|\d)',
+        re.IGNORECASE,
+    )
+
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+
+    # ── Pass 1: collect all raw activity names (everything after "activity ") ──
+    _act_decl_re = re.compile(r'^activity\s+(.+?)\s*$')
+    raw_names: list[str] = []
+    for line in lines:
+        m = _act_decl_re.match(line)
+        if m:
+            raw_names.append(m.group(1).strip())
+
+    # Build rename map for names that contain ':'
+    # Heuristic: if the part after the first ':' looks like an attribute-type
+    # spec, treat it as an inline attribute (Problem 3), not a name with ':'.
+    rename: dict[str, str] = {}   # old_name -> safe_name
+    for raw in raw_names:
+        if ':' in raw:
+            colon_pos = raw.index(':')
+            rhs = raw[colon_pos + 1:].strip()
+            if _ATTR_TYPE_RE.match(rhs):
+                # Inline attribute form — handled in Pass 2, no rename needed
+                pass
+            else:
+                # Colon is part of the activity name — sanitise it.
+                # Declare4Py's is_event_name_definition only allows [\w ],
+                # so replace every non-word, non-space character with '_'.
+                safe = re.sub(r'[^\w ]', '_', raw).strip()
+                # Collapse runs of underscores/spaces for readability
+                safe = re.sub(r'_+', '_', safe).strip('_')
+                if safe != raw:
+                    rename[raw] = safe
+
+    # ── Pass 2: rewrite lines ─────────────────────────────────────────────────
+    fixed: list[str] = []
+    changed = bool(rename)
+    seen_activities: set[str] = set()
+
+    for line in lines:
+        m = _act_decl_re.match(line)
+        if m:
+            raw_name = m.group(1).strip()
+
+            if ':' in raw_name:
+                colon_pos = raw_name.index(':')
+                rhs = raw_name[colon_pos + 1:].strip()
+                if _ATTR_TYPE_RE.match(rhs):
+                    # Problem 3 — inline attribute form
+                    base_name = raw_name[:colon_pos].strip()
+                    attr_def = rhs
+                    if base_name not in seen_activities:
+                        fixed.append(f'activity {base_name}\n')
+                        seen_activities.add(base_name)
+                    fixed.append(f'bind {base_name}: {attr_def}\n')
+                    changed = True
+                    continue
+                else:
+                    # Problem 1 — colon is part of the name
+                    safe_name = rename.get(raw_name, raw_name)
+                    if safe_name in seen_activities:
+                        changed = True
+                        continue  # deduplicate
+                    seen_activities.add(safe_name)
+                    fixed.append(f'activity {safe_name}\n')
+                    if safe_name != raw_name:
+                        changed = True
+                    continue
+            else:
+                # Plain activity declaration — deduplicate
+                if raw_name in seen_activities:
+                    changed = True
+                    continue
+                seen_activities.add(raw_name)
+                fixed.append(line)
+                continue
+
+        # Non-activity line: apply renames inside constraint brackets [ ]
+        # Apply activity renames inside constraint brackets [ ]
+        new_line = line
+        if rename:
+            def _replace_in_brackets(match: re.Match) -> str:
+                inner = match.group(1)
+                for old, new in rename.items():
+                    inner = inner.replace(old, new)
+                return f'[{inner}]'
+            new_line = re.sub(r'\[([^\]]*)\]', _replace_in_brackets, new_line)
+            if new_line != line:
+                changed = True
+
+        # Fix empty-condition binary constraints.
+        # Declare4Py parses conditions as: conditions.strip("|").split("|")
+        # and requires len(conds_list) >= 2 for binary templates.
+        # "Template[A, B] | |"  → strip → " " → split → [" "]        → len 1 → ERROR
+        #   fix: append " |"    → "| | |" → strip → " | " → split → [" "," "] → len 2 ✓
+        # "Template[A, B] |"    → strip → ""  → split → [""]         → len 1 → ERROR
+        #   fix: append " | |"  → "| | |" → strip → " | " → split → [" "," "] → len 2 ✓
+        stripped = new_line.rstrip()
+        is_binary = bool(re.search(r'\[.*,.*\]', stripped))
+        if is_binary:
+            if stripped.endswith('| |'):
+                new_line = stripped + ' |' + '\n'
+                changed = True
+            elif stripped.endswith('|') and not stripped.endswith('| |'):
+                # single trailing pipe — missing the second empty condition
+                new_line = stripped + ' | |' + '\n'
+                changed = True
+
+        fixed.append(new_line)
+
+    if not changed:
+        return path
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.decl', delete=False, encoding='utf-8'
+    )
+    tmp.writelines(fixed)
+    tmp.close()
+    return tmp.name
 
 
 def validate_xes_log(xes_log):
@@ -1161,6 +1314,7 @@ def upload_declarative_model():
     d4py_log = D4PyEventLog(case_name=case_col)
     d4py_log.parse_xes_log(xes_path)
 
+    decl_path = _fix_decl_file(decl_path)
     declare_model = DeclareModel().parse_from_file(decl_path)
     model_constraints = declare_model.get_decl_model_constraints()
 
@@ -1428,11 +1582,37 @@ def api_preview_matrix():
 
     # return small sample to avoid huge payload
     sample_df = df.head(500)
-    #sample_df = df.copy()
+
+    # compute distributions from all rows
+    distributions = {}
+    for col in df.columns:
+        series = df[col].dropna()
+        # skip columns that contain lists/arrays (e.g. activity sequences)
+        if series.apply(lambda x: isinstance(x, (list, np.ndarray))).any():
+            distributions[col] = {"labels": [], "dataValues": [], "isHistogram": False}
+            continue
+        if pd.api.types.is_numeric_dtype(series) or (series.dtype == object and pd.to_numeric(series, errors='coerce').notna().all() and len(series) > 0):
+            try:
+                numeric = pd.to_numeric(series)
+                vals = numeric.values
+                n_bins = 10
+                bin_min, bin_max = vals.min(), vals.max()
+                bin_size = (bin_max - bin_min) / n_bins if bin_max != bin_min else 1
+                counts, bin_edges = np.histogram(vals, bins=n_bins)
+                labels = [str(int(round(bin_edges[i]))) for i in range(n_bins)]
+                distributions[col] = {"labels": labels, "dataValues": counts.tolist(), "isHistogram": True}
+            except Exception:
+                freq = series.astype(str).value_counts()
+                distributions[col] = {"labels": freq.index.tolist(), "dataValues": freq.values.tolist(), "isHistogram": False}
+        else:
+            freq = series.astype(str).value_counts()
+            distributions[col] = {"labels": freq.index.tolist(), "dataValues": freq.values.tolist(), "isHistogram": False}
 
     return jsonify({
         "columns": list(sample_df.columns),
-        "rows": _df_to_records(sample_df)
+        "rows": _df_to_records(sample_df),
+        "total_rows": len(df),
+        "distributions": distributions,
     })
 
 
@@ -1834,7 +2014,7 @@ def compute_causal_effects():
                     })
                 continue
 
-            # ── CATE via DoWhy (all other computation types) ─────────────────
+            # ── ATE via DoWhy (all other computation types) ──────────────────
             graph = f'digraph {{ "{dev}" -> "{dim}" }}'
 
             try:
@@ -2258,7 +2438,7 @@ def api_llm_suggestion():
 
     # Build a compact prompt
     effects_lines = "\n".join(
-        f"  - {e['dimension']}: CATE={e['ate']:.3f} ({e['criticality']})"
+        f"  - {e['dimension']}: ATE={e['ate']:.3f} ({e['criticality']})"
         for e in causal_effects if e.get('ate') is not None
     )
     rule_line = f"\nKey predictive pattern: {top_rule}" if top_rule else ""

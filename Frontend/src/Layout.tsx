@@ -1,19 +1,37 @@
 import React from "react";
-import { AppBar, Toolbar, Typography, Avatar, Box, Button, Container } from "@mui/material";
+import { AppBar, Toolbar, Typography, Avatar, Box, Button, Container, Stepper, Step, StepLabel } from "@mui/material";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { BottomNavProvider, useBottomNav } from "./BottomNavContext";
 import { useFileContext } from "./FileContext";
+
+const STEPS = [
+  { label: "Upload", routes: ["/"] },
+  { label: "Select Deviations", routes: ["/overview", "/violation-guidelines", "/activity-stats", "/view-bpmn"] },
+  { label: "Define Impact Dimensions", routes: ["/select-dimensions", "/heatmap-aggr"] },
+  { label: "Compute Impact", routes: ["/causal-results"] },
+  { label: "Assign Desirability", routes: ["/criticality-results"] },
+  { label: "Investigate Root Causes", routes: ["/recommendations"] },
+];
+
+function getActiveStep(pathname: string): number {
+  for (let i = STEPS.length - 1; i >= 0; i--) {
+    if (STEPS[i].routes.includes(pathname)) return i;
+  }
+  return -1;
+}
 
 const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:5000";
 
 const LayoutInner: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { continueConfig, hideBack } = useBottomNav();
   const { resetAll } = useFileContext();
+  const activeStep = getActiveStep(location.pathname);
 
   const handleReset = async () => {
     try {
@@ -58,6 +76,27 @@ const LayoutInner: React.FC = () => {
           </Avatar>
         </Toolbar>
       </AppBar>
+
+      {/* Progress Stepper */}
+      {activeStep >= 0 && (
+        <Box sx={{ backgroundColor: "#fafafa", borderBottom: "1px solid #e0e0e0", px: 3, py: 1.5 }}>
+          <Container maxWidth="lg">
+            <Stepper activeStep={activeStep} alternativeLabel>
+              {STEPS.map((step) => (
+                <Step key={step.label}>
+                  <StepLabel
+                    sx={{
+                      "& .MuiStepLabel-label": { fontSize: 11 },
+                    }}
+                  >
+                    {step.label}
+                  </StepLabel>
+                </Step>
+              ))}
+            </Stepper>
+          </Container>
+        </Box>
+      )}
 
       {/* Content — scrollable */}
       <Box sx={{ flex: 1, overflow: "auto" }}>

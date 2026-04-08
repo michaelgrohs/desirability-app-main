@@ -17,9 +17,14 @@ import {
   TableBody,
   Chip,
   Popover,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from '@mui/material';
 import InfoIcon from '@mui/icons-material/Info';
 import BarChartIcon from '@mui/icons-material/BarChart';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useNavigate } from 'react-router-dom';
 import { useFileContext } from './FileContext';
 import NavigatedViewer from 'bpmn-js/lib/NavigatedViewer';
@@ -177,6 +182,8 @@ const DeviationOverview: React.FC = () => {
 
   const [previewColumns, setPreviewColumns] = useState<string[]>([]);
   const [previewRows, setPreviewRows] = useState<any[]>([]);
+  const [totalRows, setTotalRows] = useState<number>(0);
+  const [distributions, setDistributions] = useState<Record<string, { labels: string[]; dataValues: number[]; isHistogram: boolean }>>({});
 
   // Model viewer state
   const [modelType, setModelType] = useState<'bpmn' | 'pnml' | 'pnml_info' | 'declarative' | 'declarative-model' | null>(null);
@@ -192,6 +199,8 @@ const DeviationOverview: React.FC = () => {
       .then(data => {
         setPreviewColumns(data.columns);
         setPreviewRows(data.rows);
+        setTotalRows(data.total_rows ?? data.rows?.length ?? 0);
+        setDistributions(data.distributions ?? {});
       });
   }, [selectedDeviations]);
 
@@ -262,8 +271,46 @@ const DeviationOverview: React.FC = () => {
       .then((json) => {
         if (conformanceMode === 'declarative' || conformanceMode === 'declarative-model') {
           setDeclarativeData(json);
+          // Pre-select constraints with ≥10 violations; always exclude zero-violation ones
+          setSelectedDeviations(prev => {
+            // If already has selections, only strip zero-violation ones
+            if (prev.length > 0) {
+              const zeroCols = new Set(
+                (json.constraints ?? [])
+                  .filter((c: ConstraintItem) => c.violation_count === 0)
+                  .map((c: ConstraintItem) => c.constraint)
+              );
+              return prev.filter(d => !zeroCols.has(d.column));
+            }
+            // Fresh load: pre-select those with ≥10 violations
+            return (json.constraints ?? [])
+              .filter((c: ConstraintItem) => c.violation_count >= 10)
+              .map((c: ConstraintItem) => ({
+                column: c.constraint,
+                label: `${c.type}: ${c.operands[0]} → ${c.operands[1] || ''}`,
+                type: c.type,
+              }));
+          });
         } else {
           setData(json);
+          // Pre-select deviations with ≥10 occurrences; always exclude zero-count ones
+          setSelectedDeviations(prev => {
+            if (prev.length > 0) {
+              const zeroCols = new Set<string>();
+              (json.skips ?? []).forEach((i: DeviationItem) => { if (i.count === 0) zeroCols.add(`(Skip ${i.activity})`); });
+              (json.insertions ?? []).forEach((i: DeviationItem) => { if (i.count === 0) zeroCols.add(`(Insert ${i.activity})`); });
+              return prev.filter(d => !zeroCols.has(d.column));
+            }
+            // Fresh load: pre-select those with ≥10 occurrences
+            const preSelected: typeof prev = [];
+            (json.skips ?? []).forEach((i: DeviationItem) => {
+              if (i.count >= 10) preSelected.push({ column: `(Skip ${i.activity})`, label: i.activity, type: 'skip' });
+            });
+            (json.insertions ?? []).forEach((i: DeviationItem) => {
+              if (i.count >= 10) preSelected.push({ column: `(Insert ${i.activity})`, label: i.activity, type: 'insertion' });
+            });
+            return preSelected;
+          });
         }
         setLoading(false);
       })
@@ -354,40 +401,55 @@ const DeviationOverview: React.FC = () => {
 
     const maxCount = Math.max(...items.map((i) => i.count));
 
-    return items.map((item, index) => (
-      <Box key={index} sx={{ mb: 2 }}>
-        <Box display="flex" alignItems="center" justifyContent="space-between">
-          <Box display="flex" alignItems="center">
-            <Checkbox
-              checked={selectedDeviations.some(
-                (d) =>
-                  d.column ===
-                  (type === 'skip'
-                    ? `(Skip ${item.activity})`
-                    : `(Insert ${item.activity})`)
-              )}
-              onChange={() => handleToggle(item.activity, type)}
-            />
-            <Typography>{item.activity}</Typography>
+    return items.map((item, index) => {
+      const isZero = item.count === 0;
+      return (
+        <Box key={index} sx={{ mb: 2, opacity: isZero ? 0.5 : 1 }}>
+          <Box display="flex" alignItems="center" justifyContent="space-between">
+            <Box display="flex" alignItems="center">
+              <Tooltip
+                title={isZero ? "No occurrences detected — nothing to investigate." : ""}
+                disableHoverListener={!isZero}
+                arrow
+              >
+                <span>
+                  <Checkbox
+                    checked={selectedDeviations.some(
+                      (d) =>
+                        d.column ===
+                        (type === 'skip'
+                          ? `(Skip ${item.activity})`
+                          : `(Insert ${item.activity})`)
+                    )}
+                    onChange={() => handleToggle(item.activity, type)}
+                    disabled={isZero}
+                  />
+                </span>
+              </Tooltip>
+              <Typography color={isZero ? 'text.disabled' : 'text.primary'}>{item.activity}</Typography>
+            </Box>
+            <Typography fontWeight="bold" color={isZero ? 'text.disabled' : 'text.primary'}>
+              {item.count.toLocaleString('en-US')}
+            </Typography>
           </Box>
-
-          <Typography fontWeight="bold">
-            {item.count.toLocaleString('en-US')}
-          </Typography>
+          {isZero && (
+            <Typography variant="caption" sx={{ color: '#9e9e9e', display: 'block', ml: 5 }}>
+              No occurrences — cannot be investigated.
+            </Typography>
+          )}
+          <Box sx={{ height: 6, backgroundColor: '#eee', borderRadius: 2, mt: 0.5 }}>
+            <Box
+              sx={{
+                height: 6,
+                width: `${(item.count / maxCount) * 100}%`,
+                backgroundColor: type === 'skip' ? '#d32f2f' : '#1976d2',
+                borderRadius: 2,
+              }}
+            />
+          </Box>
         </Box>
-
-        <Box sx={{ height: 6, backgroundColor: '#eee', borderRadius: 2, mt: 0.5 }}>
-          <Box
-            sx={{
-              height: 6,
-              width: `${(item.count / maxCount) * 100}%`,
-              backgroundColor: type === 'skip' ? '#d32f2f' : '#1976d2',
-              borderRadius: 2,
-            }}
-          />
-        </Box>
-      </Box>
-    ));
+      );
+    });
   };
 
   // =========================
@@ -408,16 +470,26 @@ const DeviationOverview: React.FC = () => {
           {items.map((item, index) => {
             const maxCount = Math.max(...constraints.map(c => c.violation_count), 1);
             const neverActivated = conformanceMode === 'declarative-model' && (item.total_activations ?? -1) === 0;
+            const noViolations = item.violation_count === 0;
+            const isDisabled = neverActivated || noViolations;
             return (
-              <Box key={index} sx={{ mb: 2 }}>
+              <Box key={index} sx={{ mb: 2, opacity: isDisabled ? 0.5 : 1 }}>
                 <Box display="flex" alignItems="flex-start" justifyContent="space-between">
                   <Box display="flex" alignItems="flex-start">
-                    <Checkbox
-                      checked={selectedDeviations.some(d => d.column === item.constraint)}
-                      onChange={() => handleConstraintToggle(item)}
-                      disabled={neverActivated}
-                      sx={{ mt: -0.5 }}
-                    />
+                    <Tooltip
+                      title={noViolations && !neverActivated ? "No violations detected — nothing to investigate." : ""}
+                      disableHoverListener={!noViolations || neverActivated}
+                      arrow
+                    >
+                      <span>
+                        <Checkbox
+                          checked={selectedDeviations.some(d => d.column === item.constraint)}
+                          onChange={() => handleConstraintToggle(item)}
+                          disabled={isDisabled}
+                          sx={{ mt: -0.5 }}
+                        />
+                      </span>
+                    </Tooltip>
                     <Box>
                       <Typography>
                         {item.operands[0]}
@@ -480,7 +552,12 @@ const DeviationOverview: React.FC = () => {
 
                       {neverActivated && (
                         <Typography variant="caption" sx={{ color: '#9e9e9e', display: 'block', mt: 0.5 }}>
-                          Never activated — constraint was not triggered in any trace. Violations are vacuous and can be disregarded.
+                          Never activated — constraint was not triggered in any trace. Violations are vacuous and cannot be investigated.
+                        </Typography>
+                      )}
+                      {!neverActivated && noViolations && (
+                        <Typography variant="caption" sx={{ color: '#9e9e9e', display: 'block', mt: 0.5 }}>
+                          No violations — all traces satisfy this constraint. Nothing to investigate.
                         </Typography>
                       )}
 
@@ -544,7 +621,7 @@ const DeviationOverview: React.FC = () => {
                     sx={{
                       height: 6,
                       width: `${(item.violation_count / maxCount) * 100}%`,
-                      backgroundColor: neverActivated ? '#ccc' : '#ed6c02',
+                      backgroundColor: isDisabled ? '#ccc' : '#ed6c02',
                       borderRadius: 2,
                     }}
                   />
@@ -563,21 +640,23 @@ const DeviationOverview: React.FC = () => {
   const renderMatrixPreview = () => {
     if (previewColumns.length === 0 || previewRows.length === 0) return null;
 
-    // Pre-compute chart data per column (outside JSX loop)
+    // Use backend-computed distributions (based on all traces), falling back to preview rows
     const colChartData: Record<string, { labels: string[]; dataValues: number[]; isHistogram: boolean }> = {};
     previewColumns.forEach((col) => {
+      if (distributions[col]) {
+        colChartData[col] = distributions[col];
+        return;
+      }
+      // fallback: compute from preview rows
       const values = previewRows
         .map((row) => row[col])
         .filter((v) => v !== null && v !== undefined && !Array.isArray(v));
-
       if (!values.length) {
         colChartData[col] = { labels: [], dataValues: [], isHistogram: false };
         return;
       }
-
       const numericValues = values.filter((v) => !isNaN(Number(v))).map(Number);
       const isHistogram = numericValues.length === values.length;
-
       if (isHistogram) {
         const h = createHistogram(numericValues, 10);
         colChartData[col] = { labels: h.labels, dataValues: h.counts, isHistogram: true };
@@ -592,12 +671,30 @@ const DeviationOverview: React.FC = () => {
 
     return (
       <Box mt={9}>
-        <Box display="flex" alignItems="baseline" gap={2}>
+        <Box display="flex" alignItems="center" gap={1}>
           <Typography variant="h6">Trace × Deviation Matrix</Typography>
-          {previewRows.length > 100 && (
-            <Typography variant="caption" color="text.secondary">
-              Showing first 100 of {previewRows.length} traces
-            </Typography>
+          {totalRows > 0 && (
+            <Tooltip
+              arrow
+              title={
+                totalRows > 100
+                  ? `Showing 100 of ${totalRows.toLocaleString('en-US')} total traces. The full analysis (causal effects, criticality, root causes) uses all ${totalRows.toLocaleString('en-US')} traces — this table is a preview only.`
+                  : `Showing all ${totalRows.toLocaleString('en-US')} traces.`
+              }
+            >
+              <Box display="flex" alignItems="center" sx={{ cursor: 'default' }}>
+                {totalRows > 100 ? (
+                  <WarningAmberIcon sx={{ fontSize: 18, color: '#ed6c02' }} />
+                ) : (
+                  <InfoIcon sx={{ fontSize: 18, color: '#9e9e9e' }} />
+                )}
+                <Typography variant="caption" color={totalRows > 100 ? '#ed6c02' : 'text.secondary'} sx={{ ml: 0.5 }}>
+                  {totalRows > 100
+                    ? `100 of ${totalRows.toLocaleString('en-US')} traces shown`
+                    : `${totalRows.toLocaleString('en-US')} traces`}
+                </Typography>
+              </Box>
+            </Tooltip>
           )}
         </Box>
 
@@ -687,7 +784,7 @@ const DeviationOverview: React.FC = () => {
     <Box sx={{ width: '90vw', maxWidth: 1100, margin: '0 auto', mt: 4 }}>
 
       {/* HEADER */}
-      <Box display="flex" alignItems="center" justifyContent="center" gap={1} mb={4}>
+      <Box display="flex" alignItems="center" justifyContent="center" gap={1} mb={2}>
         <Typography variant="h5">
           Select Deviations of Interest
         </Typography>
@@ -705,6 +802,34 @@ const DeviationOverview: React.FC = () => {
             <InfoIcon color="primary" />
           </IconButton>
         </Tooltip>
+      </Box>
+
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              {conformanceMode === 'declarative' || conformanceMode === 'declarative-model'
+                ? "All violated DECLARE constraints detected in your event log, ordered by violation count. Each row represents one constraint. Constraints that were never activated (0 activations) are vacuous — their violations can generally be disregarded."
+                : "All deviations detected between your event log and the process model, ordered by frequency. Skipped activities were expected by the model but did not occur in the log; inserted activities occurred in the log but are not expected by the model at that position."}
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Select the deviations you want to investigate. Only selected deviations will be carried forward into the causal analysis. Deviations with zero occurrences are disabled and cannot be selected.
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+              <strong>Tip:</strong> Deviations with very few occurrences (1–10) may produce unreliable causal estimates — the small sample size makes it hard to substantiate any findings. These are pre-deselected by default. Consider focusing on deviations that appear more frequently for more robust results.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
       {/* MODEL VIEWER — BPMN mode */}

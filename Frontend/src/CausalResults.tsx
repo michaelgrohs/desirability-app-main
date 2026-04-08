@@ -16,8 +16,12 @@ import {
   Tooltip,
   IconButton,
   Alert,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import { useLocation, useNavigate } from "react-router-dom";
 import { useFileContext } from "./FileContext";
@@ -93,7 +97,7 @@ const getAteTooltip = (dimension: string, deviation: string, ate: number): strin
   } else {
     const fmtAbs = absAte.toLocaleString('en-US', { maximumFractionDigits: 2 });
     const fmtAte = ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return `The ${dimension} CATE is ${fmtAte}. This means that ${dimension} is ${direction} by ${fmtAbs} on average whenever "${deviation}" occurs.`;
+    return `The ${dimension} ATE is ${fmtAte}. This means that ${dimension} is ${direction} by ${fmtAbs} on average whenever "${deviation}" occurs.`;
   }
 };
 
@@ -212,7 +216,9 @@ const CausalResults: React.FC = () => {
     });
   }, [dimensions]);
 
-  // default boundaries based on data distribution (keeps user edits)
+  // default boundaries: neutral zone ±10% of maxAbs, then ±40% and ±75% cuts
+  // for negative-good dims (time, costs) levelsForDim() reverses the labels,
+  // so the same cut positions automatically mean "less = better"
   useEffect(() => {
     if (!dimensions.length || !results.length) return;
 
@@ -232,17 +238,12 @@ const CausalResults: React.FC = () => {
 
       if (!values.length) return;
 
-      const realMin = Math.min(...values);
-      const realMax = Math.max(...values);
-      const padding = (realMax - realMin) * 0.2 || 1;
-      const lower = realMin - padding;
-      const upper = realMax + padding;
+      const maxAbs = Math.max(...values.map(Math.abs), 1);
 
-      const stepSize = (upper - lower) / levels.length;
-
-      updated[dim] = Array.from({ length: levels.length - 1 }, (_, i) => {
-        return lower + stepSize * (i + 1);
-      });
+      // 6 cuts for 7 levels: [-50%, -25%, -5%, +5%, +25%, +50%] × maxAbs
+      // neutral = (±5%), slightly neg/pos = (5–25%), neg/pos = (25–50%), very = (>50%)
+      const fractions = [-0.50, -0.25, -0.05, +0.05, +0.25, +0.50];
+      updated[dim] = fractions.map(f => f * maxAbs);
     });
 
     if (Object.keys(updated).length) {
@@ -274,7 +275,7 @@ const CausalResults: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setContinue({
-      label: "Criticality Overview",
+      label: "Next",
       onClick: () =>
         navigate("/criticality-results", {
           state: { results, criticalityMap: buildCriticalityMap() },
@@ -287,32 +288,42 @@ const CausalResults: React.FC = () => {
   return (
     <Box sx={{ width: "90vw", maxWidth: 1000, margin: "0 auto", mt: 4 }}>
       {/* HEADER */}
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={4}>
-        <Typography variant="h5">Causal Effects</Typography>
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+        <Typography variant="h5">Causal Effects &amp; Direct Cost Attribution</Typography>
 
         <Button variant="outlined" color="secondary" onClick={handleReset}>
           Reset & Start Over
         </Button>
       </Box>
 
-      <Box display="flex" alignItems="center" mb={1}>
-        <Typography variant="h5">Causal Effects &amp; Direct Cost Attribution</Typography>
-        <Tooltip
-          title="Each cell shows the Conditional Average Treatment Effect (CATE) of a deviation on a process dimension, with the p-value in parentheses. For dimensions configured as 'Time-window Cost', the cell instead shows the total and average cost directly attributed to time-window violations — no statistical estimation needed. Hover over any cell for details."
-          arrow
-          placement="right"
-        >
-          <IconButton size="small" sx={{ ml: 1 }}>
-            <InfoIcon fontSize="small" color="action" />
-          </IconButton>
-        </Tooltip>
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              A matrix showing the estimated causal effect (ATE) of each selected deviation on each impact dimension. Negative values indicate that the deviation reduces the dimension (e.g., shorter time, lower outcome probability); positive values indicate an increase. Cells in parentheses show the p-value; values below 0.05 are statistically significant.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Review the effects and set criticality thresholds using the panel on the right — these thresholds determine how ATE values are classified (e.g., "very negative", "neutral") on the next page. Then click <em>Next</em> to proceed to the Criticality Overview.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
-      {/* CATE intuition explanation */}
+      {/* ATE intuition explanation */}
       <Box sx={{ backgroundColor: "grey.50", border: "1px solid", borderColor: "grey.200", borderRadius: 2, p: 2, mb: 3 }}>
         <Typography variant="body2" gutterBottom>
-          A <strong>CATE</strong> (Conditional Average Treatment Effect) measures the estimated causal impact of a deviation on a process dimension, compared to cases without that deviation. For example, a CATE of <strong>−12.5</strong> for the <em>time</em> dimension means that cases where this deviation occurred were on average <strong>12.5 time units (e.g., seconds) shorter</strong>.
-            A CATE of <strong>−0.30</strong> for a binary dimension like <em>outcome</em> means the probability of a positive outcome was on average <strong>30% lower</strong> in affected cases.
+          An <strong>ATE</strong> (Average Treatment Effect) measures the estimated causal impact of a deviation on a process dimension, compared to cases without that deviation. For example, an ATE of <strong>−12.5</strong> for the <em>time</em> dimension means that cases where this deviation occurred were on average <strong>12.5 time units (e.g., seconds) shorter</strong>.
+            An ATE of <strong>−0.30</strong> for a binary dimension like <em>outcome</em> means the probability of a positive outcome was on average <strong>30% lower</strong> in affected cases.
         </Typography>
         <Typography variant="body2" gutterBottom sx={{ mt: 1 }}>
           The <strong>p-value</strong> (in parentheses) indicates statistical significance: a smaller p-value means the estimated effect is less likely to be due to chance. A common threshold is p &lt; 0.05.
@@ -343,7 +354,7 @@ const CausalResults: React.FC = () => {
           </Box>
           <Box>
             <Typography variant="caption" color="text.secondary">
-              <strong>−0.30</strong> = CATE: the deviation reduces the dimension by 0.30 units on average
+              <strong>−0.30</strong> = ATE: the deviation reduces the dimension by 0.30 units on average
               (or −30%ok, make the toolt for binary dimensions)
             </Typography>
             <br />
@@ -432,7 +443,7 @@ const CausalResults: React.FC = () => {
                   );
                 }
 
-                // ── CATE ─────────────────────────────────────────────────────
+                // ── ATE ──────────────────────────────────────────────────────
                 const bgColor = getCellColor(dim, result.ate, maxAbsEffect);
 
                 return (
@@ -596,7 +607,7 @@ const CausalResults: React.FC = () => {
 
               {/* Range Slider */}
               <Typography variant="body2" sx={{ mt: 2 }}>
-                {isTimeCostDim ? "Cost Range" : "CATE Range"}
+                {isTimeCostDim ? "Cost Range" : "ATE Range"}
               </Typography>
 
               <Slider

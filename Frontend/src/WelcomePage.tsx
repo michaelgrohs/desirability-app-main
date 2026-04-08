@@ -15,8 +15,12 @@ import {
   Slider,
   Tooltip,
   IconButton,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from '@mui/material';
 import InfoIcon from '@mui/icons-material/Info';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useNavigate } from 'react-router-dom';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import { useBottomNav } from './BottomNavContext';
@@ -26,7 +30,7 @@ const API_URL = process.env.REACT_APP_API_URL || "http://127.0.0.1:5000";
 
 const WelcomePage: React.FC = () => {
   const [mode, setMode] = useState<ConformanceMode>('bpmn');
-  const [declSubMode, setDeclSubMode] = useState<'mine' | 'upload'>('mine');
+  const [declSubMode, setDeclSubMode] = useState<'mine' | 'upload'>('upload');
   const [bpmnSubMode, setBpmnSubMode] = useState<'upload' | 'mine'>('upload');
   const [miningAlgorithm, setMiningAlgorithm] = useState<'inductive_infrequent' | 'heuristics' | 'alpha'>('inductive_infrequent');
   const [noiseThreshold, setNoiseThreshold] = useState<number>(0.2);
@@ -338,6 +342,43 @@ const WelcomePage: React.FC = () => {
         </Tooltip>
       </Box>
 
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5, textAlign: 'left' }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
+              Four conformance checking modes, each requiring different inputs:
+            </Typography>
+            <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+              <Typography component="li" variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                <strong>Trace Alignment — Upload Model:</strong> Upload a BPMN or PNML process model + an event log. Deviations are found by aligning each trace to the model (skipped and inserted activities).
+              </Typography>
+              <Typography component="li" variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                <strong>Trace Alignment — Mine Model:</strong> Upload an event log only. A process model is automatically discovered (Inductive Miner, Heuristics, or Alpha Miner) and used for trace alignment.
+              </Typography>
+              <Typography component="li" variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                <strong>Declarative — Mine from Log:</strong> Upload an event log only. A declarative DECLARE model is mined from the log. Choose constraint templates and a minimum support threshold.
+              </Typography>
+              <Typography component="li" variant="body2" color="text.secondary">
+                <strong>Declarative — Upload Model:</strong> Upload an event log + a pre-existing <em>.decl</em> model file. Conformance is checked against the uploaded constraints.
+              </Typography>
+            </Box>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Select a mode, upload the required files, and click <em>Upload & Compute</em>. Once processing completes and deviations are detected, the <em>Next</em> button will become active.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+      </Box>
+
       <Stack spacing={3}>
         {/* Mode Toggle */}
         <ToggleButtonGroup
@@ -364,11 +405,11 @@ const WelcomePage: React.FC = () => {
               fullWidth
               size="small"
             >
-              <ToggleButton value="mine">
-                Mine Model from Log
-              </ToggleButton>
               <ToggleButton value="upload">
                 Upload .decl Model
+              </ToggleButton>
+              <ToggleButton value="mine">
+                Mine Model from Log
               </ToggleButton>
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>

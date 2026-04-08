@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   Box,
   Typography,
@@ -26,9 +26,13 @@ import {
   List,
   ListItem,
   ListItemText,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { useNavigate } from "react-router-dom";
 import { useEffect } from 'react';
 import { useBottomNav } from './BottomNavContext';
@@ -59,6 +63,14 @@ const dimensionTooltips: Record<Dimension, string> = {
   quality: "Quality: a binary indicator of whether a case meets quality standards (1 = meets standards, 0 = does not). A higher value is better.",
   outcome: "Outcome: a binary indicator of a desired case outcome (1 = successful, 0 = unsuccessful). A higher value is better.",
   compliance: "Compliance: a binary indicator of whether a case adheres to regulatory or policy rules (1 = compliant, 0 = non-compliant). A higher value is better.",
+};
+
+const dimensionDescriptions: Record<Dimension, string> = {
+  time: "Measures how long a case takes. Lower values are better. Map to a duration column or convert to a convenient unit via formula.",
+  costs: "Measures monetary expenditure. Lower values are better. Combine cost-related attributes via a formula (e.g., Amount × Quantity).",
+  quality: "Binary indicator of whether quality standards were met (1 = good, 0 = not). Use a rule on a rework count, error flag, or activity presence.",
+  outcome: "Binary indicator of the desired case result (1 = success, 0 = failure). Use a rule on a final activity or result attribute.",
+  compliance: "Binary indicator of regulatory or policy adherence (1 = compliant, 0 = not). Encode as the non-existence of a forbidden activity or condition.",
 };
 
 const computationTypeTooltips: Record<ComputationType, string> = {
@@ -330,6 +342,70 @@ const SelectDimensions: React.FC = () => {
     return [Math.min(...nums), Math.max(...nums)];
   };
 
+  // ---------------------------
+  // Dimension suggestions (data-driven, defined after getColumnRange)
+  // ---------------------------
+  interface DimSuggestion { label: string; note: string; config: { computationType: ComputationType; config: any } }
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const dimensionSuggestions: Record<Dimension, DimSuggestion[]> = useMemo(() => {
+    const durationCol = matrixColumns.find(c =>
+      c === 'trace_duration_seconds' || c.toLowerCase().includes('trace_duration')
+    );
+    const reworkCols = matrixColumns.filter(c =>
+      c.toLowerCase().includes('rework') || c.toLowerCase().includes('redo')
+    );
+    // find the activity-sequence column (contains arrays)
+    const activitiesCol = matrixColumns.find(c => matrixRows.some((r: any) => Array.isArray(r[c])));
+
+    return {
+      time: [
+        ...(durationCol ? [
+          {
+            label: `Use "${durationCol}" directly (seconds)`,
+            note: 'Maps time to the duration column as-is. Lower = faster.',
+            config: { computationType: 'existing' as ComputationType, config: { column: durationCol } },
+          },
+          {
+            label: `"${durationCol}" ÷ 3600 → hours`,
+            note: 'Formula: converts seconds to hours for a more readable scale.',
+            config: { computationType: 'formula' as ComputationType, config: { expression: `${durationCol}/3600` } },
+          },
+        ] : []),
+      ],
+      costs: [],
+      quality: [
+        ...reworkCols.map(col => {
+          const [, rMax] = getColumnRange(col);
+          return {
+            label: `${col} < 2  (low rework = good quality)`,
+            note: `Quality = 1 if ${col} < 2, else 0. Column range: 0–${rMax.toLocaleString('en-US', { maximumFractionDigits: 1 })}.`,
+            config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: col, operator: 'less', value: '2' }] } },
+          };
+        }),
+        ...(activitiesCol ? [{
+          label: 'Specific activity occurred → quality met',
+          note: 'Quality = 1 if the activity sequence contains a chosen activity. Fill in the activity name below.',
+          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
+        }] : []),
+      ],
+      outcome: [
+        ...(activitiesCol ? [{
+          label: 'Desired activity occurred in trace',
+          note: 'Outcome = 1 if the activity sequence contains a chosen activity. Fill in the activity name below.',
+          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
+        }] : []),
+      ],
+      compliance: [
+        {
+          label: 'Forbidden activity absent  (choose column)',
+          note: 'Compliance = 1 if a problematic activity did NOT occur. Select the column below after applying.',
+          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: '', operator: 'equals', value: '0' }] } },
+        },
+      ],
+    };
+  }, [matrixColumns, matrixRows]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Columns usable in rule conditions: exclude only trace_id
   const ruleColumns = matrixColumns.filter((col) => col !== "trace_id");
 
@@ -412,7 +488,7 @@ const SelectDimensions: React.FC = () => {
     <Box sx={{ width: "100%", margin: "0 auto", mt: 5 }}>
 
       <Box display="flex" alignItems="center" mb={2}>
-        <Typography variant="h5">Select Impact Dimensions</Typography>
+        <Typography variant="h5">Define Impact Dimensions</Typography>
         <Tooltip
           title="Define how each quality dimension should be measured using your trace data. 'Use Existing Column' maps a dimension directly to a numeric column. 'Formula' lets you compute a value via a pandas expression (e.g., col_a / col_b). 'Binary Rule' defines a dimension as 1 (desired) or 0 (undesired) based on a condition — for categorical columns you select the target value from a dropdown; for numeric columns a slider and text field let you set the threshold. Click 'Compute Dimensions' to apply your configuration before proceeding to causal analysis."
           arrow
@@ -422,6 +498,29 @@ const SelectDimensions: React.FC = () => {
             <InfoIcon fontSize="small" color="action" />
           </IconButton>
         </Tooltip>
+      </Box>
+
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              A set of quality dimensions — time, costs, quality, outcome, and compliance — representing different aspects of process performance. Each dimension should be mapped to a feature from your event log, computed via a formula, or defined as a binary rule.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Check the dimensions you want to include and configure how each should be measured. When all active dimensions are configured, click <em>Continue</em> to proceed to the next step.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
       {availableDimensions.map(dim => (
@@ -440,13 +539,53 @@ const SelectDimensions: React.FC = () => {
 
       <Divider sx={{ my: 4 }} />
 
-      {selectedDimensions.map(dim => (
+      {selectedDimensions.map(dim => {
+        return (
         <Card key={dim} sx={{ mb: 3 }}>
           <CardContent>
 
             <Typography variant="h6">
               Configure: {dim}
             </Typography>
+
+            {(() => {
+              const desc = dimensionDescriptions[dim as Dimension];
+              const suggestions = dimensionSuggestions[dim as Dimension] || [];
+              return (
+                <Box sx={{ mt: 1.5, mb: 0.5, p: 1.25, backgroundColor: '#f0f4ff', borderRadius: 1, border: '1px solid #c5d0f0' }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: suggestions.length ? 1 : 0 }}>
+                    {desc}
+                  </Typography>
+                  {suggestions.length > 0 && (
+                    <>
+                      <Typography variant="caption" sx={{ display: 'block', color: '#1a237e', fontWeight: 600, mb: 0.5 }}>
+                        Quick apply:
+                      </Typography>
+                      {suggestions.map((s, i) => (
+                        <Box key={i} display="flex" alignItems="flex-start" gap={1} sx={{ mb: 0.75 }}>
+                          <Box flex={1}>
+                            <Typography variant="caption" sx={{ color: 'text.primary', fontWeight: 500, display: 'block' }}>
+                              {s.label}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                              {s.note}
+                            </Typography>
+                          </Box>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            sx={{ py: 0.25, fontSize: '0.7rem', flexShrink: 0, alignSelf: 'center' }}
+                            onClick={() => updateConfig(dim, s.config)}
+                          >
+                            Apply
+                          </Button>
+                        </Box>
+                      ))}
+                    </>
+                  )}
+                </Box>
+              );
+            })()}
 
             <FormControl sx={{ mt: 2 }}>
               <FormLabel>Computation Type</FormLabel>
@@ -931,7 +1070,8 @@ const SelectDimensions: React.FC = () => {
 
           </CardContent>
         </Card>
-      ))}
+        );
+      })}
 
       {computeError && (
         <Alert severity="error" sx={{ mt: 3 }} onClose={() => { setComputeError(null); setCausalErrors([]); }}>

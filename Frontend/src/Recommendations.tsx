@@ -21,6 +21,9 @@ import {
   FormControl,
   InputLabel,
   TextField,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
@@ -1314,92 +1317,6 @@ const Recommendations: React.FC = () => {
   // Top rule text per deviation (for KeyPatternBox — Feature 9)
   const [topRuleTexts, setTopRuleTexts] = useState<{ [dev: string]: string | null }>({});
 
-  // LLM / Ollama state
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const [ollamaOnline, setOllamaOnline] = useState<boolean | null>(null); // null = checking
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  const [pullingModel, setPullingModel] = useState(false);
-  const [pullError, setPullError] = useState<string>("");
-
-  useEffect(() => {
-    fetch(`${API_URL}/api/ollama/models`)
-      .then((r) => r.json())
-      .then((data) => {
-        setOllamaOnline(data.online);
-        setOllamaModels(data.models ?? []);
-        if (data.models?.length > 0) setSelectedModel(data.models[0]);
-      })
-      .catch(() => setOllamaOnline(false));
-  }, []);
-
-  const pullModel = (model: string) => {
-    setPullingModel(true);
-    setPullError("");
-    fetch(`${API_URL}/api/ollama/pull`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.error) { setPullError(data.error); return; }
-        // Re-fetch model list after pull
-        return fetch(`${API_URL}/api/ollama/models`).then((r) => r.json()).then((d) => {
-          setOllamaModels(d.models ?? []);
-          setSelectedModel(model);
-        });
-      })
-      .catch(() => setPullError("Pull failed. Check Ollama is running."))
-      .finally(() => setPullingModel(false));
-  };
-
-  // LLM suggestions
-  const [llmSuggestions, setLlmSuggestions] = useState<{ [dev: string]: string }>({});
-  const [llmLoading, setLlmLoading] = useState<{ [dev: string]: boolean }>({});
-  const [llmErrors, setLlmErrors] = useState<{ [dev: string]: string }>({});
-
-  const fetchLlmSuggestion = (deviation: string, dir: "negative" | "positive" | "neutral") => {
-    if (llmSuggestions[deviation] || llmLoading[deviation]) return;
-    if (!selectedModel) return;
-    setLlmLoading((p) => ({ ...p, [deviation]: true }));
-    setLlmErrors((p) => ({ ...p, [deviation]: "" }));
-    const causalEffects = results
-      .filter((r) => r.deviation === deviation && isFinite(r.ate))
-      .map((r) => ({
-        dimension: r.dimension,
-        ate: r.ate,
-        criticality: getCriticality(r.ate, criticalityMap[r.dimension]) ?? "neutral",
-      }));
-    // Collect all unique activity names from the matrix for process context
-    const allActivities = Array.from(
-      new Set(
-        matrixRows.flatMap((row) => (Array.isArray(row.activities) ? row.activities : []))
-      )
-    ).sort();
-    fetch(`${API_URL}/api/llm-suggestion`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deviation,
-        direction: dir,
-        causal_effects: causalEffects,
-        top_rule: topRuleTexts[deviation] ?? null,
-        model: selectedModel,
-        all_activities: allActivities,
-      }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.error) {
-          setLlmErrors((p) => ({ ...p, [deviation]: data.error }));
-        } else {
-          setLlmSuggestions((p) => ({ ...p, [deviation]: data.suggestion }));
-        }
-      })
-      .catch(() => setLlmErrors((p) => ({ ...p, [deviation]: "Failed to reach Ollama. Is it running?" })))
-      .finally(() => setLlmLoading((p) => ({ ...p, [deviation]: false })));
-  };
-
   useEffect(() => {
     if (matrixFetched) return;
     setMatrixLoading(true);
@@ -1442,14 +1359,14 @@ const Recommendations: React.FC = () => {
   const exportCSV = () => {
     const dims = Array.from(new Set(results.map((r) => r.dimension)));
 
-    // Priority + CATE table
+    // Priority + ATE table
     let csv = "Rank,Deviation,Priority Score,Recommendation\n";
     editList.forEach((item, idx) => {
       const dir = overallDirection(item.score);
       csv += `${idx + 1},"${item.deviation}",${item.score},${dir === "negative" ? "Avoid" : dir === "positive" ? "Adopt" : "Ignore"}\n`;
     });
 
-    csv += "\nCATE Table\nDeviation," + dims.join(",") + "\n";
+    csv += "\nATE Table\nDeviation," + dims.join(",") + "\n";
     editList.forEach((item) => {
       const cells = dims.map((dim) => {
         const r = results.find((x) => x.deviation === item.deviation && x.dimension === dim);
@@ -1595,7 +1512,7 @@ const Recommendations: React.FC = () => {
         ]);
       autoTable(doc, {
         startY: causalStartY + 4,
-        head: [["Dimension", "CATE", "p-value", "Criticality", "Interpretation"]],
+        head: [["Dimension", "ATE", "p-value", "Criticality", "Interpretation"]],
         body: causalRows,
         styles: { fontSize: 8 },
         headStyles: { fillColor: [80, 80, 80] },
@@ -1618,20 +1535,6 @@ const Recommendations: React.FC = () => {
         curY += ruleLines.length * 4 + 8;
       }
 
-      // AI suggestion
-      const suggestion = llmSuggestions[item.deviation];
-      if (suggestion) {
-        // New page if we're running low
-        if (curY > 240) { doc.addPage(); curY = 18; }
-        doc.setFontSize(10);
-        doc.setFont("helvetica", "bold");
-        doc.text(`AI Suggestions (${selectedModel})`, 14, curY);
-        doc.setFont("helvetica", "normal");
-        curY += 5;
-        doc.setFontSize(8);
-        const sugLines = doc.splitTextToSize(suggestion, 182);
-        doc.text(sugLines, 14, curY);
-      }
     });
 
     doc.save("recommendations.pdf");
@@ -1640,7 +1543,7 @@ const Recommendations: React.FC = () => {
   if (editList.length === 0) {
     return (
       <Box sx={{ width: "100%", mt: 4 }}>
-        <Typography variant="h5" mb={3}>Recommendations</Typography>
+        <Typography variant="h5" mb={3}>Root Cause Investigation</Typography>
         <Alert severity="warning">
           No analysis data found. Please go back and complete the causal analysis first.
         </Alert>
@@ -1656,7 +1559,7 @@ const Recommendations: React.FC = () => {
       {/* Header */}
       <Box display="flex" alignItems="center" justifyContent="space-between" mb={1} flexWrap="wrap" gap={1}>
         <Box display="flex" alignItems="center">
-          <Typography variant="h5">Recommendations</Typography>
+          <Typography variant="h5">Root Cause Investigation</Typography>
           <Tooltip
             title="Each deviation is analysed individually based on its causal impact across all selected dimensions. Negative deviations (overall harmful) should be avoided; positive ones (overall beneficial) should be adopted; neutral ones can be ignored. Expand a card to investigate root causes per dimension using distribution charts, correlation plots, and trace-level detail."
             arrow
@@ -1672,53 +1575,27 @@ const Recommendations: React.FC = () => {
           <Button size="small" variant="outlined" onClick={exportPDF}>Export PDF</Button>
         </Box>
       </Box>
-      <Typography variant="body2" color="text.secondary" mb={2}>
-        Deviations are ordered by overall negative impact (most harmful first). You can edit the priority score on any card to re-rank. Expand any card to investigate root causes for a specific dimension.
-      </Typography>
-
-      {/* Ollama model selector */}
-      <Box sx={{ mb: 3, p: 1.5, border: "1px solid #e0e0e0", borderRadius: 2, backgroundColor: "#fafafa", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1.5 }}>
-        <Typography variant="caption" sx={{ fontWeight: 600, color: "#6a0080" }}>AI Model</Typography>
-        {ollamaOnline === null && (
-          <Box display="flex" alignItems="center" gap={1}>
-            <CircularProgress size={12} />
-            <Typography variant="caption" color="text.secondary">Checking Ollama…</Typography>
-          </Box>
-        )}
-        {ollamaOnline === false && (
-          <Alert severity="error" sx={{ py: 0, px: 1, fontSize: 11 }}>
-            Ollama is not running. Start it with <code>ollama serve</code>.
-          </Alert>
-        )}
-        {ollamaOnline && ollamaModels.length > 0 && (
-          <FormControl size="small" sx={{ minWidth: 180 }}>
-            <Select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} sx={{ fontSize: 12 }}>
-              {ollamaModels.map((m) => (
-                <MenuItem key={m} value={m} sx={{ fontSize: 12 }}>{m}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        )}
-        {ollamaOnline && ollamaModels.length === 0 && !pullingModel && (
-          <Box display="flex" alignItems="center" gap={1}>
-            <Typography variant="caption" color="text.secondary">No models found.</Typography>
-            <Button size="small" variant="outlined" sx={{ fontSize: 11, borderColor: "#9c27b0", color: "#9c27b0" }} onClick={() => pullModel("llama3.2")}>
-              Download llama3.2
-            </Button>
-          </Box>
-        )}
-        {ollamaOnline && ollamaModels.length > 0 && (
-          <Button size="small" variant="text" sx={{ fontSize: 11, color: "#9c27b0" }} onClick={() => pullModel("llama3.2")} disabled={pullingModel}>
-            + llama3.2
-          </Button>
-        )}
-        {pullingModel && (
-          <Box display="flex" alignItems="center" gap={1}>
-            <CircularProgress size={12} />
-            <Typography variant="caption" color="text.secondary">Downloading… this may take a few minutes.</Typography>
-          </Box>
-        )}
-        {pullError && <Typography variant="caption" color="error">{pullError}</Typography>}
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              One card per selected deviation, ranked by overall negative impact (most harmful first). Each card summarises the causal effects on all dimensions and shows whether the deviation should be avoided, adopted, or ignored.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Review the ranking and adjust priority scores to re-order cards if needed. Expand any card to investigate root causes for a specific dimension — including correlation patterns, trace-level data, and predictive rules.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
       {matrixLoading && (
@@ -1799,52 +1676,13 @@ const Recommendations: React.FC = () => {
                 </Box>
               </Box>
 
-              {/* LLM suggestion */}
-              <Box sx={{ mt: 1.5 }}>
-                {!llmSuggestions[item.deviation] && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    disabled={!!llmLoading[item.deviation] || !selectedModel || ollamaOnline !== true}
-                    startIcon={llmLoading[item.deviation] ? <CircularProgress size={14} /> : undefined}
-                    onClick={() => fetchLlmSuggestion(item.deviation, dir)}
-                    sx={{ borderColor: "#9c27b0", color: "#9c27b0", "&:hover": { borderColor: "#6a0080", color: "#6a0080" } }}
-                  >
-                    {llmLoading[item.deviation] ? "Generating…" : `AI Suggestions${selectedModel ? ` (${selectedModel})` : ""}`}
-                  </Button>
-                )}
-                {llmErrors[item.deviation] && (
-                  <Alert severity="error" sx={{ mt: 1, fontSize: 12 }}>{llmErrors[item.deviation]}</Alert>
-                )}
-                {llmSuggestions[item.deviation] && (
-                  <Box sx={{ mt: 1, p: 1.5, backgroundColor: "#f3e5f5", borderLeft: "3px solid #9c27b0", borderRadius: 1 }}>
-                    <Typography variant="caption" sx={{ fontWeight: 700, color: "#6a0080", display: "block", mb: 0.5 }}>
-                      AI Suggestions ({selectedModel})
-                    </Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", fontSize: 12 }}>
-                      {llmSuggestions[item.deviation]}
-                    </Typography>
-                    <Button
-                      size="small"
-                      sx={{ mt: 1, fontSize: 11, color: "#9c27b0" }}
-                      onClick={() => {
-                        setLlmSuggestions((p) => { const n = { ...p }; delete n[item.deviation]; return n; });
-                        setLlmErrors((p) => { const n = { ...p }; delete n[item.deviation]; return n; });
-                      }}
-                    >
-                      Regenerate
-                    </Button>
-                  </Box>
-                )}
-              </Box>
-
               {/* Per-dimension impact table */}
               <Box sx={{ mt: 2, overflowX: "auto" }}>
                 <Table size="small">
                   <TableHead>
                     <TableRow sx={{ backgroundColor: "rgba(0,0,0,0.03)" }}>
                       <TableCell sx={{ fontSize: 11, fontWeight: 700 }}>Dimension</TableCell>
-                      <TableCell sx={{ fontSize: 11, fontWeight: 700 }} align="center">CATE</TableCell>
+                      <TableCell sx={{ fontSize: 11, fontWeight: 700 }} align="center">ATE</TableCell>
                       <TableCell sx={{ fontSize: 11, fontWeight: 700 }} align="center">p-value</TableCell>
                       <TableCell sx={{ fontSize: 11, fontWeight: 700 }} align="center">Criticality</TableCell>
                       <TableCell sx={{ fontSize: 11, fontWeight: 700 }}>Interpretation</TableCell>

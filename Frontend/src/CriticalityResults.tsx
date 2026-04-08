@@ -11,8 +11,12 @@ import {
   Button,
   Tooltip,
   IconButton,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
 } from "@mui/material";
 import InfoIcon from "@mui/icons-material/Info";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { useLocation, useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -150,7 +154,7 @@ const CriticalityResults: React.FC = () => {
 
   React.useEffect(() => {
     setContinue({
-      label: "Recommendations",
+      label: "Root Cause Investigation",
       onClick: () =>
         navigate("/recommendations", {
           state: { results, criticalityMap, priorityList },
@@ -249,11 +253,11 @@ const CriticalityResults: React.FC = () => {
 
   return (
     <Box sx={{ width: "100%", margin: "0 auto", mt: 4 }}>
-      <Box display="flex" justifyContent="space-between" alignItems="center" mb={4}>
+      <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
         <Box display="flex" alignItems="center">
           <Typography variant="h5">Criticality Overview</Typography>
           <Tooltip
-            title="Each cell shows the criticality label (e.g., 'very negative', 'neutral') assigned to the CATE of a deviation for a given dimension, based on the thresholds you configured on the previous page. The priority table ranks deviations by their overall negative impact across all dimensions — use the arrows to adjust the order manually. Export as CSV or PDF to share results. Click 'Recommendations' to proceed to detailed root cause analysis."
+            title="Each cell shows the criticality label (e.g., 'very negative', 'neutral') assigned to the ATE of a deviation for a given dimension, based on the thresholds you configured on the previous page. The priority table ranks deviations by their overall negative impact across all dimensions — use the arrows to adjust the order manually. Export as CSV or PDF to share results. Click 'Root Cause Investigation' to proceed to detailed root cause analysis."
             arrow
             placement="right"
           >
@@ -262,6 +266,29 @@ const CriticalityResults: React.FC = () => {
             </IconButton>
           </Tooltip>
         </Box>
+      </Box>
+
+      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              A criticality matrix that translates each ATE value into a qualitative label (e.g., "very negative", "neutral", "positive") based on the thresholds you set. Below the matrix, deviations are ranked by their overall negative impact across all dimensions.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
+        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Typography variant="body2" color="text.secondary">
+              Review the criticality labels and the suggested prioritization. Adjust the ranking manually if needed using the arrow buttons. When satisfied, click <em>Root Cause Investigation</em> to explore the underlying causes of each deviation.
+            </Typography>
+          </AccordionDetails>
+        </Accordion>
       </Box>
 
       <Box display="flex" gap={3} mb={3} alignItems="center" flexWrap="wrap">
@@ -338,7 +365,7 @@ const CriticalityResults: React.FC = () => {
       </Table>
 
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
-        Proceed to Recommendations to explore root cause analysis for each deviation.
+        Proceed to Root Cause Investigation to explore root cause analysis for each deviation.
       </Typography>
 
       <Box mt={4}>
@@ -346,7 +373,7 @@ const CriticalityResults: React.FC = () => {
           <Typography variant="h6">Suggested Prioritization</Typography>
           <Tooltip
             title={
-              "Each deviation receives a priority score based on how negative its CATE labels are across all dimensions. " +
+              "Each deviation receives a priority score based on how negative its ATE labels are across all dimensions. " +
               "Scores per dimension: 'very negative' = +3, 'negative' = +2, 'slightly negative' = +1, 'neutral' = 0, " +
               "'slightly positive' = −1, 'positive' = −2, 'very positive' = −3. " +
               "These per-dimension scores are summed into a total priority score — a higher score means a more negative overall impact across all dimensions, and therefore higher remediation priority. " +
