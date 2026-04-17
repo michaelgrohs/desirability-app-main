@@ -119,6 +119,8 @@ const resultValueLabel = (r: CausalResult): string => {
     : "–";
 };
 
+const capDim = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 const CriticalityResults: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -143,7 +145,7 @@ const CriticalityResults: React.FC = () => {
         const weight = criticalityWeight(label);
 
         score += weight;
-        if (weight > 0 && label) reasons.push(`${dim} is ${label}`);
+        if (weight > 0 && label) reasons.push(`${capDim(dim)} is ${label}`);
       });
 
       return { deviation: dev, score, reasons };
@@ -173,7 +175,7 @@ const CriticalityResults: React.FC = () => {
 
         const label = getCriticality(result.ate, criticalityMap[dim]);
         const val = result.method === "direct_time_cost" ? (result.total_cost ?? "") : result.ate;
-        csv += `${dim},${dev},${label ?? ""},${val}\n`;
+        csv += `${capDim(dim)},${dev},${label ?? ""},${val}\n`;
       });
     });
 
@@ -201,7 +203,7 @@ const CriticalityResults: React.FC = () => {
       startY: 20,
       head: [["Dimension", ...deviations]],
       body: dimensions.map((dim) => [
-        dim,
+        capDim(dim),
         ...deviations.map((dev) => {
           const result = results.find((r) => r.dimension === dim && r.deviation === dev);
           if (!result) return "";
@@ -318,14 +320,15 @@ const CriticalityResults: React.FC = () => {
 
       <Divider sx={{ my: 3 }} />
 
-      <Table size="small">
+      <Box sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+      <Table size="small" sx={{ minWidth: Math.max(400, deviations.length * 140 + 160) }}>
         <TableHead>
           <TableRow>
-            <TableCell>
+            <TableCell sx={{ position: 'sticky', left: 0, zIndex: 3, background: '#f5f5f5', fontWeight: 700, minWidth: 160, borderRight: '2px solid', borderColor: 'divider' }}>
               <strong>Dimension</strong>
             </TableCell>
             {deviations.map((dev) => (
-              <TableCell key={dev} align="center">
+              <TableCell key={dev} align="center" sx={{ minWidth: 140, maxWidth: 200, whiteSpace: 'normal', wordBreak: 'break-word' }}>
                 <strong>{dev}</strong>
               </TableCell>
             ))}
@@ -335,8 +338,8 @@ const CriticalityResults: React.FC = () => {
         <TableBody>
           {dimensions.map((dim) => (
             <TableRow key={dim}>
-              <TableCell>
-                <strong>{dim}</strong>
+              <TableCell sx={{ position: 'sticky', left: 0, zIndex: 2, background: '#fafafa', borderRight: '2px solid', borderColor: 'divider' }}>
+                <strong>{capDim(dim)}</strong>
               </TableCell>
 
               {deviations.map((dev) => {
@@ -363,6 +366,7 @@ const CriticalityResults: React.FC = () => {
           ))}
         </TableBody>
       </Table>
+      </Box>
 
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
         Proceed to Root Cause Investigation to explore root cause analysis for each deviation.

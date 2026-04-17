@@ -1947,6 +1947,7 @@ def configure_dimensions():
 
 
 from dowhy import CausalModel as dowhymodel
+import warnings as _warnings
 
 @app.route("/api/compute-causal-effects", methods=["POST"])
 def compute_causal_effects():
@@ -1965,8 +1966,54 @@ def compute_causal_effects():
     print("Impact matrix shape:", df.shape)
     print("Columns:", df.columns.tolist())
 
+    # ── Determine trace-length column ────────────────────────────────────────
+    if 'event_count' in df.columns:
+        length_col = 'event_count'
+    elif 'activities' in df.columns:
+        df['_trace_length'] = df['activities'].apply(
+            lambda x: len(x) if isinstance(x, list) else 0
+        )
+        length_col = '_trace_length'
+    else:
+        length_col = None
+
+    def _run_causal(data, dev, dim):
+        """Run linear-regression causal estimate. Returns (value, p_value) or raises."""
+        graph = f'digraph {{ "{dev}" -> "{dim}" }}'
+        model = dowhymodel(data=data, treatment=dev, outcome=dim, graph=graph)
+        estimand = model.identify_effect(proceed_when_unidentifiable=True)
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings("ignore", category=RuntimeWarning)
+            estimate = model.estimate_effect(
+                estimand, method_name="backdoor.linear_regression", test_significance=True
+            )
+            sig = estimate.test_stat_significance()
+        return float(estimate.value), (float(sig["p_value"]) if sig else None)
+
     results = []
     dim_comp_types = last_uploaded_data.get("dim_comp_types", {})
+
+    # ── Pre-compute length-matched subset once per deviation ─────────────────
+    dev_subsets: dict = {}
+    for dev in selected_deviations:
+        if dev not in df.columns:
+            dev_subsets[dev] = (df, None)
+            continue
+        df_sub = df
+        length_range = None
+        if length_col is not None:
+            deviant_lengths = df[df[dev] == 1][length_col].dropna()
+            if len(deviant_lengths) > 0:
+                lo = int(deviant_lengths.min()) - 2
+                hi = int(deviant_lengths.max()) + 2
+                candidate = df[(df[length_col] >= lo) & (df[length_col] <= hi)]
+                if candidate[dev].nunique() >= 2 and len(candidate) >= 10:
+                    df_sub = candidate
+                    length_range = [lo, hi]
+                else:
+                    print(f"[CATE] {dev}: subset too small, CATE will equal ATE")
+        dev_subsets[dev] = (df_sub, length_range)
+        print(f"[CATE] {dev}: n={len(df_sub)}, length_range={length_range}")
 
     for dim in selected_dimensions:
         for dev in selected_deviations:
@@ -1976,6 +2023,7 @@ def compute_causal_effects():
                 continue
 
             comp_type = dim_comp_types.get(dim, "existing")
+            df_sub, length_range = dev_subsets.get(dev, (df, None))
 
             # ── Direct attribution for time-cost dimensions ──────────────────
             if comp_type == "time_cost":
@@ -2014,43 +2062,60 @@ def compute_causal_effects():
                     })
                 continue
 
-            # ── ATE via DoWhy (all other computation types) ──────────────────
-            graph = f'digraph {{ "{dev}" -> "{dim}" }}'
-
-            try:
-                model = dowhymodel(
-                    data=df,
-                    treatment=dev,
-                    outcome=dim,
-                    graph=graph
-                )
-
-                identified_estimand = model.identify_effect(
-                    proceed_when_unidentifiable=True
-                )
-
-                estimate = model.estimate_effect(
-                    identified_estimand,
-                    method_name="backdoor.linear_regression",
-                    test_significance=True
-                )
-
-                significance = estimate.test_stat_significance()
-
+            # ── Validate global dataset ──────────────────────────────────────
+            if df[dev].nunique() < 2:
                 results.append({
-                    "deviation": dev,
-                    "dimension": dim,
-                    "ate": float(estimate.value),
-                    "p_value": float(significance["p_value"]) if significance else None,
-                    "method": "cate",
+                    "deviation": dev, "dimension": dim,
+                    "error": "Deviation has no variation — it never (or always) occurs."
                 })
+                continue
+            if df[dim].nunique() < 2:
+                unique_val = df[dim].dropna().unique()
+                val_str = str(unique_val[0]) if len(unique_val) > 0 else "unknown"
+                results.append({
+                    "deviation": dev, "dimension": dim,
+                    "error": f"Dimension '{dim}' has the same value ({val_str}) for every trace — check your dimension configuration."
+                })
+                continue
 
+            # ── Global ATE (all traces) ──────────────────────────────────────
+            try:
+                ate_val, ate_p = _run_causal(df, dev, dim)
             except Exception as e:
                 results.append({
                     "deviation": dev,
                     "dimension": dim,
                     "error": f"[{dim} × {dev}] {type(e).__name__}: {str(e)}"
                 })
+                continue
+
+            # ── Length-conditioned CATE ──────────────────────────────────────
+            cate_val, cate_p, cate_error = None, None, None
+            if df_sub is not df:  # only when a real subset was found
+                if df_sub[dim].nunique() < 2:
+                    cate_error = f"Dimension '{dim}' has no variation in the length-matched subset."
+                else:
+                    try:
+                        cate_val, cate_p = _run_causal(df_sub, dev, dim)
+                    except Exception as e:
+                        cate_error = str(e)
+
+            results.append({
+                "deviation": dev,
+                "dimension": dim,
+                # Global ATE
+                "ate": ate_val,
+                "p_value": ate_p,
+                "n_traces": len(df),
+                "method": "ate_cate",
+                # Length-conditioned CATE
+                "cate": cate_val,
+                "cate_p_value": cate_p,
+                "cate_n_traces": len(df_sub) if df_sub is not df else None,
+                "cate_length_range": length_range,
+                "cate_error": cate_error,
+            })
+
     print(results)
     last_uploaded_data["causal_results"] = results
     if not results:
