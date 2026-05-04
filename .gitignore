@@ -4,7 +4,7 @@
 /Frontend/node_modules
 /Backend/venv
 /node_modules
-/experiment_data/BPI_Challenge_2019-3-w-after.xes
+/Backend/uploads
 
 /.venv/
 /venv
