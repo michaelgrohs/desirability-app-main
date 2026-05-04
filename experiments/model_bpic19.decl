@@ -1,0 +1,48 @@
+activity SRM: Created
+activity SRM: Complete
+activity SRM: Awaiting Approval
+activity SRM: Document Completed
+activity SRM: Ordered
+activity SRM: In Transfer to Execution Syst.
+activity SRM: Change was Transmitted
+activity Create Purchase Order Item
+activity Vendor creates invoice
+activity Record Goods Receipt
+activity Record Service Entry Sheet
+activity Record Invoice Receipt
+activity Clear Invoice
+activity SRM: Transfer Failed (E.Sys.)
+activity Cancel Goods Receipt
+activity Change Delivery Indicator
+activity SRM: Deleted
+activity Change Price
+activity Vendor creates debit memo
+activity Cancel Invoice Receipt
+activity Remove Payment Block
+activity Delete Purchase Order Item
+activity SRM: Transaction Completed
+activity Change Final Invoice Indicator
+activity SRM: Incomplete
+activity SRM: Held
+activity Change Quantity
+activity Change Approval for Purchase Order
+activity Set Payment Block
+activity Cancel Subsequent Invoice
+activity Create Purchase Requisition Item
+activity Receive Order Confirmation
+activity Record Subsequent Invoice
+activity Reactivate Purchase Order Item
+activity Change Rejection Indicator
+activity Change Storage Location
+activity Release Purchase Order
+activity Change payment term
+Precedence[Create Purchase Order Item, Clear Invoice] | |
+Precedence[Record Goods Receipt, Cancel Goods Receipt] | |
+Precedence[Vendor creates invoice, Clear Invoice] | |
+Response[Change Quantity, Record Invoice Receipt] | |
+Response[Change Price, Record Invoice Receipt] | |
+Response[Vendor creates invoice, Record Invoice Receipt] | |
+Response[Record Invoice Receipt, Clear Invoice] | |
+Response[Set Payment Block, Remove Payment Block] | |
+Precedence[Record Goods Receipt, Clear Invoice] | |
+Response[Remove Payment Block, Clear Invoice] | |
