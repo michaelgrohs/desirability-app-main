@@ -604,9 +604,8 @@ const ProcessContextPanel: React.FC<{ deviation: string; matrixRows: any[] }> = 
     .slice(0, 10)
     .map((item) => {
       const clipped = item.lift > LIFT_CAP;
-      const shortName = item.act.length > 28 ? item.act.slice(0, 26) + "…" : item.act;
       return {
-        label: clipped ? shortName + " ···" : shortName,
+        label: clipped ? item.act + " ···" : item.act,
         lift: parseFloat(Math.min(item.lift, LIFT_CAP).toFixed(2)),
         liftActual: parseFloat(item.lift.toFixed(2)),
         rateWith: parseFloat((item.rateWith * 100).toFixed(1)),
@@ -614,6 +613,11 @@ const ProcessContextPanel: React.FC<{ deviation: string; matrixRows: any[] }> = 
         clipped,
       };
     });
+
+  const liftYAxisWidth = Math.min(
+    Math.max(...top10.map((d) => d.label.length), 10) * 5 + 10,
+    300
+  );
 
   return (
     <Box sx={{ mt: 2, border: "1px solid #e0e0e0", borderRadius: 1, p: 2, backgroundColor: "#fafafe" }}>
@@ -648,7 +652,7 @@ const ProcessContextPanel: React.FC<{ deviation: string; matrixRows: any[] }> = 
               <Typography variant="caption" color="text.secondary">
                 Activity association lift — red = more common with deviation, blue = less common
               </Typography>
-              <Tooltip title={`Lift = (activity rate in deviant traces) ÷ (activity rate in conformant traces). Lift > 1 means the activity appears more often when the deviation is present. Bars are capped at ${LIFT_CAP}×; labels ending in "···" are truncated — hover to see the actual value.`} arrow>
+              <Tooltip title={`Lift = (activity rate in deviant traces) ÷ (activity rate in conformant traces). Lift > 1 means the activity appears more often when the deviation is present. Bars are capped at ${LIFT_CAP}×; labels ending in "···" indicate the actual lift exceeded the cap — hover to see the true value.`} arrow>
                 <InfoIcon sx={{ fontSize: 13, color: "text.disabled", cursor: "help", flexShrink: 0 }} />
               </Tooltip>
             </Box>
@@ -661,7 +665,7 @@ const ProcessContextPanel: React.FC<{ deviation: string; matrixRows: any[] }> = 
                   tick={{ fontSize: 9 }}
                   tickFormatter={(v) => v === LIFT_CAP ? `${LIFT_CAP}+` : v.toFixed(1)}
                 />
-                <YAxis type="category" dataKey="label" tick={{ fontSize: 8 }} width={140} />
+                <YAxis type="category" dataKey="label" tick={{ fontSize: 8 }} width={liftYAxisWidth} />
                 <RechartsTip
                   formatter={(_v: any, _name: string, props: any) => {
                     const p = props.payload;
@@ -1576,7 +1580,7 @@ const Recommendations: React.FC = () => {
         </Box>
       </Box>
       <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+        <Accordion defaultExpanded={true} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
           </AccordionSummary>
@@ -1586,7 +1590,7 @@ const Recommendations: React.FC = () => {
             </Typography>
           </AccordionDetails>
         </Accordion>
-        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+        <Accordion defaultExpanded={true} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
           </AccordionSummary>

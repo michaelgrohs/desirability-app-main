@@ -222,8 +222,8 @@ const CausalResults: React.FC = () => {
       if (boundaries[dim] && boundaries[dim].length === levels.length - 1) return;
       const values = results
         .filter((r) => r.dimension === dim)
-        .map((r) => r.ate)
-        .filter((v) => v !== undefined);
+        .flatMap((r) => (r.cate != null ? [r.ate, r.cate] : [r.ate]))
+        .filter((v) => v !== undefined) as number[];
       if (!values.length) return;
       const maxAbs = Math.max(...values.map(Math.abs), 1);
       const fractions = [-0.50, -0.25, -0.05, +0.05, +0.25, +0.50];
@@ -296,7 +296,7 @@ const CausalResults: React.FC = () => {
 
       {/* What you see / What to do accordions */}
       <Box sx={{ mb: 2, mt: 1.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+        <Accordion defaultExpanded={true} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
           </AccordionSummary>
@@ -590,8 +590,15 @@ const CausalResults: React.FC = () => {
 
           if (!values.length) return null;
 
-          const rawMin = Math.min(...values);
-          const rawMax = Math.max(...values);
+          // Scale is always derived from the union of ATE and CATE so the
+          // slider range doesn't jump when switching the basis toggle.
+          const allValues = results
+            .filter((r) => r.dimension === dim)
+            .flatMap((r) => (r.cate != null ? [r.ate, r.cate] : [r.ate]))
+            .filter((v) => v !== undefined) as number[];
+
+          const rawMin = Math.min(...allValues);
+          const rawMax = Math.max(...allValues);
           const allWithinUnit = rawMin >= -1 && rawMax <= 1;
           const min = Math.min(allWithinUnit ? -1 : -10, rawMin);
           const max = Math.max(allWithinUnit ? 1 : 10, rawMax);

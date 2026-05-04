@@ -2107,6 +2107,7 @@ def compute_causal_effects():
                 "ate": ate_val,
                 "p_value": ate_p,
                 "n_traces": len(df),
+                "n_treated": int(df[dev].sum()),
                 "method": "ate_cate",
                 # Length-conditioned CATE
                 "cate": cate_val,

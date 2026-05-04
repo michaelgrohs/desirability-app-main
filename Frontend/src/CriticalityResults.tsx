@@ -33,6 +33,9 @@ interface CausalResult {
   total_cost?: number;
   mean_cost_violated?: number;
   n_traces_with_cost?: number;
+  n_traces?: number;
+  n_treated?: number;
+  n_violations?: number;
 }
 
 type CriticalityLevel =
@@ -132,6 +135,17 @@ const CriticalityResults: React.FC = () => {
   const dimensions = Array.from(new Set(results.map((r) => r.dimension)));
   const deviations = Array.from(new Set(results.map((r) => r.deviation)));
 
+  const deviationFrequency: { [dev: string]: number | undefined } = {};
+  deviations.forEach((dev) => {
+    const r = results.find((r) => r.deviation === dev);
+    if (!r) return;
+    if (r.method === "direct_time_cost") {
+      deviationFrequency[dev] = r.n_violations;
+    } else {
+      deviationFrequency[dev] = r.n_treated;
+    }
+  });
+
   const deviationPriorities = deviations
     .map((dev) => {
       let score = 0;
@@ -148,7 +162,7 @@ const CriticalityResults: React.FC = () => {
         if (weight > 0 && label) reasons.push(`${capDim(dim)} is ${label}`);
       });
 
-      return { deviation: dev, score, reasons };
+      return { deviation: dev, score, reasons, frequency: deviationFrequency[dev] };
     })
     .sort((a, b) => b.score - a.score);
 
@@ -180,10 +194,10 @@ const CriticalityResults: React.FC = () => {
     });
 
     csv += "\n\nPriorities\n";
-    csv += "Rank,Deviation,Score\n";
+    csv += "Rank,Deviation,Frequency,Score\n";
 
     priorityList.forEach((item, idx) => {
-      csv += `${idx + 1},${item.deviation},${item.score}\n`;
+      csv += `${idx + 1},${item.deviation},${item.frequency ?? ""},${item.score}\n`;
     });
 
     const blob = new Blob([csv], { type: "text/csv" });
@@ -218,8 +232,8 @@ const CriticalityResults: React.FC = () => {
 
     autoTable(doc, {
       startY: 20,
-      head: [["Rank", "Deviation", "Score"]],
-      body: priorityList.map((item, idx) => [idx + 1, item.deviation, item.score]),
+      head: [["Rank", "Deviation", "Frequency", "Score"]],
+      body: priorityList.map((item, idx) => [idx + 1, item.deviation, item.frequency ?? "—", item.score]),
     });
 
     doc.save("causal_analysis.pdf");
@@ -271,7 +285,7 @@ const CriticalityResults: React.FC = () => {
       </Box>
 
       <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+        <Accordion defaultExpanded={true} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What you see</Typography>
           </AccordionSummary>
@@ -281,7 +295,7 @@ const CriticalityResults: React.FC = () => {
             </Typography>
           </AccordionDetails>
         </Accordion>
-        <Accordion defaultExpanded={false} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
+        <Accordion defaultExpanded={true} disableGutters sx={{ backgroundColor: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: '8px !important', boxShadow: 'none', '&:before': { display: 'none' } }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 36, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.secondary' }}>What to do</Typography>
           </AccordionSummary>
@@ -336,6 +350,19 @@ const CriticalityResults: React.FC = () => {
         </TableHead>
 
         <TableBody>
+          <TableRow>
+            <TableCell sx={{ position: 'sticky', left: 0, zIndex: 2, background: '#f0f4f8', borderRight: '2px solid', borderColor: 'divider', fontWeight: 700, color: 'text.secondary' }}>
+              Frequency
+            </TableCell>
+            {deviations.map((dev) => {
+              const freq = deviationFrequency[dev];
+              return (
+                <TableCell key={dev} align="center" sx={{ background: '#f0f4f8', fontWeight: 600, color: 'text.secondary' }}>
+                  {freq != null ? freq.toLocaleString('en-US') : "—"}
+                </TableCell>
+              );
+            })}
+          </TableRow>
           {dimensions.map((dim) => (
             <TableRow key={dim}>
               <TableCell sx={{ position: 'sticky', left: 0, zIndex: 2, background: '#fafafa', borderRight: '2px solid', borderColor: 'divider' }}>
@@ -397,6 +424,7 @@ const CriticalityResults: React.FC = () => {
             <TableRow>
               <TableCell>Rank</TableCell>
               <TableCell>Deviation</TableCell>
+              <TableCell>Frequency</TableCell>
               <TableCell>Priority Score</TableCell>
               <TableCell>Reason</TableCell>
               <TableCell>Adjust</TableCell>
@@ -408,6 +436,7 @@ const CriticalityResults: React.FC = () => {
               <TableRow key={item.deviation}>
                 <TableCell>{index + 1}</TableCell>
                 <TableCell>{item.deviation}</TableCell>
+                <TableCell>{item.frequency != null ? item.frequency.toLocaleString('en-US') : "—"}</TableCell>
                 <TableCell>{item.score.toLocaleString('en-US')}</TableCell>
                 <TableCell>
                   {item.reasons.length > 0 ? item.reasons.join(", ") : "No negative impact"}
