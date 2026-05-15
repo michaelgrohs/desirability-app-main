@@ -1295,10 +1295,8 @@ const Recommendations: React.FC = () => {
   const criticalityMap: CriticalityMap = location.state?.criticalityMap || {};
   const priorityList: PriorityItem[] = location.state?.priorityList || [];
 
-  // Editable copy of priorityList — user can adjust scores which re-sorts cards
-  const [editList, setEditList] = useState<PriorityItem[]>(() =>
-    [...priorityList].sort((a, b) => b.score - a.score)
-  );
+  // Editable copy of priorityList — preserve the manual order set on screen 5
+  const [editList, setEditList] = useState<PriorityItem[]>([...priorityList]);
 
   const updateScore = (deviation: string, newScore: number) => {
     setEditList((prev) =>
