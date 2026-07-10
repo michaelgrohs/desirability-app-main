@@ -45,7 +45,10 @@
   "scripts": {
     "start": "concurrently \"npm run backend\" \"npm run frontend\"",
     "frontend": "react-scripts start",
-    "backend": "cd ../Backend && PYTHONUNBUFFERED=1 arch -arm64 python app.py"
+    "backend": "cd ../Backend && PYTHONUNBUFFERED=1 arch -arm64 python app.py",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
   },
   "eslintConfig": {
     "extends": [
