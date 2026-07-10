@@ -22,11 +22,15 @@ window.fetch = async (...args) => {
 // On any hard page load (fresh open or reload), always start from the home page —
 // except for standalone routes that are designed to be opened fresh (e.g. the
 // process model reference page, meant to be opened in its own tab).
-const STANDALONE_ROUTES = ["/model-reference"];
+// Base path aware: when deployed under a subpath (via PUBLIC_URL at build time),
+// "home" is "<subpath>/", not the bare domain root.
+const basePath = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
+const homePath = `${basePath}/`;
+const STANDALONE_ROUTES = [`${basePath}/model-reference`];
 const navEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
 if (navEntry && (navEntry.type === "navigate" || navEntry.type === "reload")) {
-  if (window.location.pathname !== "/" && !STANDALONE_ROUTES.includes(window.location.pathname)) {
-    window.history.replaceState({}, "", "/");
+  if (window.location.pathname !== homePath && !STANDALONE_ROUTES.includes(window.location.pathname)) {
+    window.history.replaceState({}, "", homePath);
   }
 }
 

@@ -16,7 +16,7 @@ import ModelReference from "./ModelReference";
 const App: React.FC = () => {
   return (
     <FileProvider>
-      <Router>
+      <Router basename={process.env.PUBLIC_URL}>
         <Routes>
           {/* Standalone — no wizard chrome, meant to be opened in its own tab */}
           <Route path="/model-reference" element={<ModelReference />} />
