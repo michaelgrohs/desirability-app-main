@@ -31,6 +31,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import InfoIcon from "@mui/icons-material/Info";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useBottomNav } from "./BottomNavContext";
+import { useFileContext, DimensionMeta } from "./FileContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import {
@@ -106,6 +107,38 @@ const BINARY_DIMS = new Set(["outcome", "quality", "compliance"]);
 const NEGATIVE_GOOD_DIMS = new Set(["time", "costs"]);
 const DIM_NAMES_SET = new Set(["time", "costs", "quality", "outcome", "compliance"]);
 
+const SIGNIFICANCE_THRESHOLD = 0.05;
+const isSignificant = (p: number | null | undefined): boolean => p != null && p < SIGNIFICANCE_THRESHOLD;
+
+const PValueBadge: React.FC<{ p: number | null | undefined }> = ({ p }) => {
+  const label = p != null ? p.toFixed(3) : "–";
+  if (isSignificant(p)) {
+    return <span>{label}</span>;
+  }
+  return (
+    <Tooltip title={`Not statistically significant (p ≥ ${SIGNIFICANCE_THRESHOLD}) — interpret this effect with caution.`} arrow>
+      <Box
+        component="span"
+        sx={{
+          display: "inline-block",
+          px: 0.6,
+          py: "1px",
+          borderRadius: "4px",
+          fontSize: "0.7rem",
+          fontWeight: 700,
+          color: "#e65100",
+          backgroundColor: "rgba(255,152,0,0.28)",
+          border: "1px solid rgba(230,81,0,0.6)",
+          cursor: "help",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label} n.s.
+      </Box>
+    </Tooltip>
+  );
+};
+
 const getCriticality = (value: number, rules: CriticalityRule[] = []): CriticalityLevel | null => {
   for (const rule of rules) {
     if (value >= rule.min && value < rule.max) return rule.label;
@@ -146,11 +179,12 @@ const recommendationText = (dev: string, dir: "negative" | "positive" | "neutral
   return `"${dev}" has a neutral overall impact. No immediate action is required — monitor it periodically but deprioritize remediation.`;
 };
 
-const getDimInterpretation = (dim: string, ate: number): string => {
+const getDimInterpretation = (dim: string, ate: number, dimensionMeta: Record<string, DimensionMeta> = {}): string => {
   if (!isFinite(ate)) return "–";
   const dimL = dim.toLowerCase();
-  const isBinary = BINARY_DIMS.has(dimL);
-  const isNegGood = NEGATIVE_GOOD_DIMS.has(dimL);
+  const meta = dimensionMeta[dim] || dimensionMeta[dimL];
+  const isBinary = meta ? meta.isBinary : BINARY_DIMS.has(dimL);
+  const isNegGood = meta ? meta.polarity === "lower_better" : NEGATIVE_GOOD_DIMS.has(dimL);
   const abs = Math.abs(ate);
   if (isBinary) {
     const pct = (abs * 100).toFixed(1);
@@ -198,8 +232,8 @@ const pearsonCorr = (xs: number[], ys: number[]): number | null => {
   return den === 0 ? null : num / den;
 };
 
-const detectCategorical = (col: string, matrixRows: any[]): boolean => {
-  if (DIM_NAMES_SET.has(col) || col === "trace_id" || col === "activities") return false;
+const detectCategorical = (col: string, matrixRows: any[], dimNamesSet: Set<string> = DIM_NAMES_SET): boolean => {
+  if (dimNamesSet.has(col) || col === "trace_id" || col === "activities") return false;
   if (matrixRows.length === 0) return false;
   const firstVal = matrixRows.find((r) => r[col] !== null && r[col] !== undefined)?.[col];
   if (firstVal === undefined) return false;
@@ -353,11 +387,13 @@ const CorrelationOverview: React.FC<CorrelationOverviewProps> = ({
   onSelectCol,
 }) => {
   const [showOtherDevs, setShowOtherDevs] = useState(false);
+  const { dimensionMeta } = useFileContext();
+  const dimNamesSet = React.useMemo(() => new Set(Object.keys(dimensionMeta)), [dimensionMeta]);
 
   const orderedCols = matrixCols.length > 0 ? matrixCols : (matrixRows.length > 0 ? Object.keys(matrixRows[0]) : []);
 
   const isOtherDev = (col: string): boolean => {
-    if (col === deviation || DIM_NAMES_SET.has(col)) return false;
+    if (col === deviation || dimNamesSet.has(col)) return false;
     const vals = matrixRows.map((r) => r[col]).filter((v) => v !== null && v !== undefined);
     return vals.length > 0 && vals.every((v) => v === 0 || v === 1);
   };
@@ -365,7 +401,7 @@ const CorrelationOverview: React.FC<CorrelationOverviewProps> = ({
   const corrRows = orderedCols
     .filter((col) => {
       if (col === deviation || col === "trace_id" || col === "activities") return false;
-      if (DIM_NAMES_SET.has(col)) return false;
+      if (dimNamesSet.has(col)) return false;
       if (Array.isArray(matrixRows[0]?.[col])) return false;
       if (!showOtherDevs && isOtherDev(col)) return false;
       return matrixRows.some((r) => typeof r[col] === "number");
@@ -386,9 +422,9 @@ const CorrelationOverview: React.FC<CorrelationOverviewProps> = ({
   const catRows = orderedCols
     .filter((col) => {
       if (col === deviation || col === "trace_id" || col === "activities") return false;
-      if (DIM_NAMES_SET.has(col)) return false;
+      if (dimNamesSet.has(col)) return false;
       if (isOtherDev(col)) return false;
-      return detectCategorical(col, matrixRows);
+      return detectCategorical(col, matrixRows, dimNamesSet);
     })
     .map((col) => {
       const categories = Array.from(new Set(matrixRows.map((r) => r[col]).filter((v) => v !== null && v !== undefined)));
@@ -879,13 +915,16 @@ const RootCausePanel: React.FC<RootCausePanelProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviation]);
 
-  const isBinaryDim = BINARY_DIMS.has(dimension.toLowerCase());
+  const { dimensionMeta } = useFileContext();
+  const dimNamesSet = React.useMemo(() => new Set(Object.keys(dimensionMeta)), [dimensionMeta]);
+  const dimMetaEntry = dimensionMeta[dimension] || dimensionMeta[dimension.toLowerCase()];
+  const isBinaryDim = dimMetaEntry ? dimMetaEntry.isBinary : BINARY_DIMS.has(dimension.toLowerCase());
 
   const orderedCols = matrixCols.length > 0 ? matrixCols : (matrixRows.length > 0 ? Object.keys(matrixRows[0]) : []);
 
   const allDevCols = new Set(
     orderedCols.filter((col) => {
-      if (DIM_NAMES_SET.has(col)) return false;
+      if (dimNamesSet.has(col)) return false;
       const vals = matrixRows.map((r) => r[col]).filter((v) => v !== null && v !== undefined);
       return vals.length > 0 && vals.every((v) => v === 0 || v === 1);
     })
@@ -895,7 +934,7 @@ const RootCausePanel: React.FC<RootCausePanelProps> = ({
 
   const canCorrel = (col: string) =>
     col !== dimension && col !== deviation && !Array.isArray(matrixRows[0]?.[col]) &&
-    (matrixRows.some((r) => typeof r[col] === "number") || detectCategorical(col, matrixRows));
+    (matrixRows.some((r) => typeof r[col] === "number") || detectCategorical(col, matrixRows, dimNamesSet));
 
   const dimValues = matrixRows.map((r) => r[dimension]).filter((v): v is number => typeof v === "number");
   const devValues = matrixRows.map((r) => r[deviation]).filter((v) => v === 0 || v === 1);
@@ -971,7 +1010,7 @@ const RootCausePanel: React.FC<RootCausePanelProps> = ({
       );
 
     // Categorical handling
-    if (detectCategorical(correlCol, matrixRows)) {
+    if (detectCategorical(correlCol, matrixRows, dimNamesSet)) {
       const categories = Array.from(
         new Set(matrixRows.map((r) => r[correlCol]).filter((v) => v !== null && v !== undefined))
       );
@@ -1290,6 +1329,7 @@ const Recommendations: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { setContinue } = useBottomNav();
+  const { dimensionMeta } = useFileContext();
 
   const results: CausalResult[] = location.state?.results || [];
   const criticalityMap: CriticalityMap = location.state?.criticalityMap || {};
@@ -1309,6 +1349,22 @@ const Recommendations: React.FC = () => {
   const [matrixCols, setMatrixCols] = useState<string[]>([]);
   const [matrixLoading, setMatrixLoading] = useState(false);
   const [matrixFetched, setMatrixFetched] = useState(false);
+
+  // Only one of the three (negative/neutral/positive) columns is open at a time —
+  // the others collapse to a slim tab so the open one gets the full width.
+  const [activeRecColumn, setActiveRecColumn] = useState<"negative" | "neutral" | "positive">("negative");
+
+  // Which deviation cards are unhidden (shown in full) — hidden by default so the
+  // page starts as a compact list; click "Show" to reveal a card's details.
+  const [visibleCards, setVisibleCards] = useState<Set<string>>(new Set());
+  const toggleCardVisible = (dev: string) => {
+    setVisibleCards((prev) => {
+      const next = new Set(prev);
+      if (next.has(dev)) next.delete(dev);
+      else next.add(dev);
+      return next;
+    });
+  };
 
   // Which deviation card is expanded to show root cause
   const [expandedDevs, setExpandedDevs] = useState<Set<string>>(new Set());
@@ -1508,9 +1564,9 @@ const Recommendations: React.FC = () => {
         .map((r) => [
           r.dimension,
           r.ate.toFixed(3),
-          r.p_value?.toFixed(3) ?? "–",
+          r.p_value != null ? `${r.p_value.toFixed(3)}${isSignificant(r.p_value) ? "" : " (n.s.)"}` : "–",
           getCriticality(r.ate, criticalityMap[r.dimension]) ?? "–",
-          getDimInterpretation(r.dimension, r.ate),
+          getDimInterpretation(r.dimension, r.ate, dimensionMeta),
         ]);
       autoTable(doc, {
         startY: causalStartY + 4,
@@ -1612,12 +1668,14 @@ const Recommendations: React.FC = () => {
         <DeviationCooccurrence priorityList={editList} matrixRows={matrixRows} />
       )}
 
-      {editList.map((item, rank) => {
+      {(() => {
+      const renderDeviationCard = (item: PriorityItem, rank: number) => {
         const dir = overallDirection(item.score);
         const dimsForDev = results
           .filter((r) => r.deviation === item.deviation && isFinite(r.ate))
           .map((r) => r.dimension);
         const isExpanded = expandedDevs.has(item.deviation);
+        const isCardVisible = visibleCards.has(item.deviation);
         const activeDim = selectedDimPerDev[item.deviation] || dimsForDev[0] || "";
         const correlKey = `${item.deviation}::${activeDim}`;
 
@@ -1632,11 +1690,11 @@ const Recommendations: React.FC = () => {
             sx={{ mb: 3, borderLeft: `4px solid ${borderColor}`, borderRadius: 2 }}
             variant="outlined"
           >
-            <CardContent sx={{ backgroundColor: headerBg, pb: isExpanded ? 1 : 2 }}>
+            <CardContent sx={{ backgroundColor: headerBg, pb: isCardVisible && isExpanded ? 1 : 2 }}>
               {/* Card header */}
               <Box display="flex" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1}>
                 <Box>
-                  <Box display="flex" alignItems="center" gap={1} mb={0.5}>
+                  <Box display="flex" alignItems="center" gap={1} mb={0.5} flexWrap="wrap">
                     <Typography variant="h6" sx={{ fontSize: "1rem" }}>
                       #{rank + 1} — {item.deviation}
                     </Typography>
@@ -1667,17 +1725,32 @@ const Recommendations: React.FC = () => {
                       </Box>
                     </Tooltip>
                   </Box>
-                  <Typography variant="body2" color="text.secondary">
-                    {recommendationText(item.deviation, dir)}
-                  </Typography>
-                  {item.reasons.length > 0 && (
-                    <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
-                      Key impacts: {item.reasons.join(" · ")}
-                    </Typography>
+                  {isCardVisible && (
+                    <>
+                      <Typography variant="body2" color="text.secondary">
+                        {recommendationText(item.deviation, dir)}
+                      </Typography>
+                      {item.reasons.length > 0 && (
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
+                          Key impacts: {item.reasons.join(" · ")}
+                        </Typography>
+                      )}
+                    </>
                   )}
                 </Box>
+                <Button
+                  size="small"
+                  variant={isCardVisible ? "outlined" : "contained"}
+                  startIcon={isCardVisible ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                  onClick={() => toggleCardVisible(item.deviation)}
+                  disableElevation
+                >
+                  {isCardVisible ? "Hide" : "Show"}
+                </Button>
               </Box>
 
+              {isCardVisible && (
+              <>
               {/* Per-dimension impact table */}
               <Box sx={{ mt: 2, overflowX: "auto" }}>
                 <Table size="small">
@@ -1696,7 +1769,7 @@ const Recommendations: React.FC = () => {
                       .map((r) => {
                         const label = getCriticality(r.ate, criticalityMap[r.dimension]);
                         const bgColor = getCriticalityColor(label);
-                        const interp = getDimInterpretation(r.dimension, r.ate);
+                        const interp = getDimInterpretation(r.dimension, r.ate, dimensionMeta);
                         return (
                           <TableRow key={r.dimension}>
                             <TableCell sx={{ fontSize: 11, fontWeight: 600 }}>{r.dimension}</TableCell>
@@ -1706,7 +1779,7 @@ const Recommendations: React.FC = () => {
                                 : "–"}
                             </TableCell>
                             <TableCell align="center" sx={{ fontSize: 11 }}>
-                              {r.p_value !== undefined ? r.p_value.toFixed(3) : "–"}
+                              <PValueBadge p={r.p_value} />
                             </TableCell>
                             <TableCell
                               align="center"
@@ -1736,10 +1809,12 @@ const Recommendations: React.FC = () => {
                   </Button>
                 </Box>
               )}
+              </>
+              )}
             </CardContent>
 
             {/* Root cause panel */}
-            {isExpanded && (
+            {isCardVisible && isExpanded && (
               <CardContent sx={{ pt: 0 }}>
                 {/* Dimension selector */}
                 {dimsForDev.length > 1 && (
@@ -1795,7 +1870,65 @@ const Recommendations: React.FC = () => {
             )}
           </Card>
         );
-      })}
+      };
+
+      const rankedItems = editList.map((item, rank) => ({ item, rank }));
+      const columns: { key: "negative" | "neutral" | "positive"; title: string; subtitle: string; color: string }[] = [
+        { key: "negative", title: "Avoid", subtitle: "Overall harmful", color: "rgba(211,47,47,0.9)" },
+        { key: "neutral", title: "Ignore", subtitle: "No meaningful net effect", color: "rgba(120,120,120,0.9)" },
+        { key: "positive", title: "Adopt", subtitle: "Overall beneficial", color: "rgba(46,125,50,0.9)" },
+      ];
+      const grouped: { [K in "negative" | "neutral" | "positive"]: typeof rankedItems } = {
+        negative: [], neutral: [], positive: [],
+      };
+      rankedItems.forEach((ri) => grouped[overallDirection(ri.item.score)].push(ri));
+
+      const activeItems = grouped[activeRecColumn];
+
+      return (
+        <>
+          {/* Tab strip — clicking a tab makes it the (only) open column */}
+          <Box display="flex" gap={1} mb={2}>
+            {columns.map(({ key, title, subtitle, color }) => {
+              const items = grouped[key];
+              const isActive = activeRecColumn === key;
+              return (
+                <Box
+                  key={key}
+                  onClick={() => setActiveRecColumn(key)}
+                  sx={{
+                    flex: isActive ? "3 1 0" : "1 1 0",
+                    minWidth: isActive ? 260 : 140,
+                    px: 2, py: 1.25,
+                    borderRadius: 2,
+                    backgroundColor: color,
+                    color: "#fff",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    opacity: isActive ? 1 : 0.55,
+                    transition: "flex 0.2s, opacity 0.2s",
+                    border: isActive ? "2px solid rgba(0,0,0,0.25)" : "2px solid transparent",
+                  }}
+                >
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }}>{title}</Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.9 }}>{subtitle} · {items.length} deviation{items.length === 1 ? "" : "s"}</Typography>
+                </Box>
+              );
+            })}
+          </Box>
+
+          {/* Full-width panel for the active column only */}
+          <Box>
+            {activeItems.length === 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ p: 1, display: "block" }}>
+                No deviations in this category.
+              </Typography>
+            )}
+            {activeItems.map(({ item, rank }) => renderDeviationCard(item, rank))}
+          </Box>
+        </>
+      );
+      })()}
     </Box>
   );
 };

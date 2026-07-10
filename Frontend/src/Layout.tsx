@@ -1,9 +1,10 @@
 import React from "react";
-import { AppBar, Toolbar, Typography, Avatar, Box, Button, Container, Stepper, Step, StepLabel } from "@mui/material";
+import { AppBar, Toolbar, Typography, Avatar, Box, Button, Container, Stepper, Step, StepLabel, Alert } from "@mui/material";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { BottomNavProvider, useBottomNav } from "./BottomNavContext";
 import { useFileContext } from "./FileContext";
@@ -94,6 +95,37 @@ const LayoutInner: React.FC = () => {
                 </Step>
               ))}
             </Stepper>
+          </Container>
+        </Box>
+      )}
+
+      {/* Process model reference link — screen 2 onwards */}
+      {activeStep >= 1 && (
+        <Box sx={{ backgroundColor: "#fafafa", borderBottom: "1px solid #e0e0e0", px: 3, py: 1 }}>
+          <Container maxWidth="lg">
+            <Alert
+              severity="info"
+              icon={false}
+              sx={{ py: 0.25, "& .MuiAlert-message": { width: "100%" } }}
+            >
+              <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1}>
+                <Typography variant="caption" color="text.secondary">
+                  Keep the uploaded process model open in a separate tab for reference throughout your analysis.
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  endIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}
+                  component="a"
+                  href="/model-reference"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{ fontSize: 11, py: 0.25 }}
+                >
+                  View process model
+                </Button>
+              </Box>
+            </Alert>
           </Container>
         </Box>
       )}

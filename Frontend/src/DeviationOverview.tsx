@@ -20,6 +20,14 @@ import {
   Accordion,
   AccordionSummary,
   AccordionDetails,
+  Alert,
+  TextField,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import InfoIcon from '@mui/icons-material/Info';
 import BarChartIcon from '@mui/icons-material/BarChart';
@@ -166,10 +174,18 @@ const DeviationOverview: React.FC = () => {
   const { selectedDeviations, setSelectedDeviations, conformanceMode } = useFileContext();
   const { setContinue } = useBottomNav();
 
+  const [lowSelectionWarningOpen, setLowSelectionWarningOpen] = useState(false);
+
   useEffect(() => {
     setContinue({
       label: "Continue",
-      onClick: () => navigate("/select-dimensions"),
+      onClick: () => {
+        if (selectedDeviations.length < 5) {
+          setLowSelectionWarningOpen(true);
+        } else {
+          navigate("/select-dimensions");
+        }
+      },
       disabled: selectedDeviations.length === 0,
     });
     return () => setContinue(null);
@@ -184,6 +200,12 @@ const DeviationOverview: React.FC = () => {
   const [previewRows, setPreviewRows] = useState<any[]>([]);
   const [totalRows, setTotalRows] = useState<number>(0);
   const [distributions, setDistributions] = useState<Record<string, { labels: string[]; dataValues: number[]; isHistogram: boolean }>>({});
+
+  // Trace × Deviation matrix visibility (hidden by default)
+  const [showMatrix, setShowMatrix] = useState(false);
+
+  // User-adjustable auto-selection threshold (default: 10 occurrences)
+  const [threshold, setThreshold] = useState<number>(10);
 
   // Model viewer state
   const [modelType, setModelType] = useState<'bpmn' | 'pnml' | 'pnml_info' | 'declarative' | 'declarative-model' | null>(null);
@@ -386,6 +408,37 @@ const DeviationOverview: React.FC = () => {
     });
   };
 
+
+  // =========================
+  // Re-apply the auto-selection threshold on demand
+  // =========================
+  const applyThreshold = () => {
+    if (conformanceMode === 'declarative' || conformanceMode === 'declarative-model') {
+      if (!declarativeData) return;
+      setSelectedDeviations(
+        (declarativeData.constraints ?? [])
+          .filter((c) => {
+            const neverActivated = conformanceMode === 'declarative-model' && (c.total_activations ?? -1) === 0;
+            return !neverActivated && c.violation_count >= threshold;
+          })
+          .map((c) => ({
+            column: c.constraint,
+            label: `${c.type}: ${c.operands[0]} → ${c.operands[1] || ''}`,
+            type: c.type,
+          }))
+      );
+    } else {
+      if (!data) return;
+      const preSelected: typeof selectedDeviations = [];
+      (data.skips ?? []).forEach((i) => {
+        if (i.count >= threshold) preSelected.push({ column: `(Skip ${i.activity})`, label: i.activity, type: 'skip' });
+      });
+      (data.insertions ?? []).forEach((i) => {
+        if (i.count >= threshold) preSelected.push({ column: `(Insert ${i.activity})`, label: i.activity, type: 'insertion' });
+      });
+      setSelectedDeviations(preSelected);
+    }
+  };
 
   const renderList = (
     items: DeviationItem[],
@@ -671,8 +724,20 @@ const DeviationOverview: React.FC = () => {
 
     return (
       <Box mt={9}>
-        <Box display="flex" alignItems="center" gap={1}>
+        <Box
+          display="flex"
+          alignItems="center"
+          gap={1}
+          sx={{ cursor: 'pointer', userSelect: 'none' }}
+          onClick={() => setShowMatrix((v) => !v)}
+        >
+          <IconButton size="small" sx={{ p: 0.25 }}>
+            <ExpandMoreIcon sx={{ transform: showMatrix ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+          </IconButton>
           <Typography variant="h6">Trace × Deviation Matrix</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {showMatrix ? '(click to hide)' : '(click to show)'}
+          </Typography>
           {totalRows > 0 && (
             <Tooltip
               arrow
@@ -698,7 +763,8 @@ const DeviationOverview: React.FC = () => {
           )}
         </Box>
 
-        <Box sx={{ overflowX: 'auto', maxHeight: '10cm', overflowY: 'auto' }}>
+        {showMatrix && (
+        <Box sx={{ overflowX: 'auto', maxHeight: '10cm', overflowY: 'auto', mt: 1 }}>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -776,6 +842,7 @@ const DeviationOverview: React.FC = () => {
             </TableBody>
           </Table>
         </Box>
+        )}
       </Box>
     );
   };
@@ -826,11 +893,21 @@ const DeviationOverview: React.FC = () => {
               Select the deviations you want to investigate. Only selected deviations will be carried forward into the causal analysis. Deviations with zero occurrences are disabled and cannot be selected.
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-              <strong>Tip:</strong> Deviations with very few occurrences (1–10) may produce unreliable causal estimates — the small sample size makes it hard to substantiate any findings. These are pre-deselected by default. Consider focusing on deviations that appear more frequently for more robust results.
+              <strong>Tip:</strong> Deviations with very few occurrences may produce unreliable causal estimates — the small sample size makes it hard to substantiate any findings. Deviations below the threshold set below are pre-deselected by default. Consider focusing on deviations that appear more frequently for more robust results.
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+              <strong>Caution:</strong> Try not to deselect too many deviations. Only deselect deviations that occur so infrequently that they appear largely irrelevant — keeping more deviations selected generally leads to a more comprehensive and reliable analysis.
             </Typography>
           </AccordionDetails>
         </Accordion>
       </Box>
+
+      {/* Low-selection warning */}
+      {selectedDeviations.length < 5 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          You currently have only {selectedDeviations.length} deviation{selectedDeviations.length === 1 ? '' : 's'} selected. This may be too few for a comprehensive analysis — double-check whether you've deselected deviations that could still be relevant.
+        </Alert>
+      )}
 
       {/* MODEL VIEWER — BPMN mode */}
       {conformanceMode === 'bpmn' && modelContent && (
@@ -979,6 +1056,42 @@ const DeviationOverview: React.FC = () => {
         </Paper>
       )}
 
+      {/* Auto-selection threshold control */}
+      <Box
+        sx={{
+          mb: 2,
+          p: 1.5,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.5,
+          flexWrap: 'wrap',
+          backgroundColor: '#fafafa',
+          border: '1px solid #e0e0e0',
+          borderRadius: 2,
+        }}
+      >
+        <Typography variant="body2" color="text.secondary">
+          Auto-select deviations that occur at least
+        </Typography>
+        <TextField
+          type="number"
+          size="small"
+          value={threshold}
+          onChange={(e) => setThreshold(Math.max(0, Number(e.target.value)))}
+          inputProps={{ min: 0, style: { width: 56, textAlign: 'center' } }}
+        />
+        <Typography variant="body2" color="text.secondary">
+          times
+        </Typography>
+        <Tooltip title="Recomputes the current selection: deviations meeting this threshold will be selected, all others deselected." arrow>
+          <span>
+            <Button variant="outlined" size="small" onClick={applyThreshold} disabled={loading || (!data && !declarativeData)}>
+              Apply threshold
+            </Button>
+          </span>
+        </Tooltip>
+      </Box>
+
       {loading && (
         <Box display="flex" justifyContent="center" mt={6}>
           <CircularProgress />
@@ -1027,6 +1140,28 @@ const DeviationOverview: React.FC = () => {
           {renderMatrixPreview()}
         </>
       )}
+
+      {/* Low-selection confirmation dialog */}
+      <Dialog open={lowSelectionWarningOpen} onClose={() => setLowSelectionWarningOpen(false)}>
+        <DialogTitle>Few deviations selected</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            You have selected only {selectedDeviations.length} deviation{selectedDeviations.length === 1 ? '' : 's'}. This may be too few for a comprehensive analysis — consider going back and re-checking whether you've deselected deviations that could still be relevant.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setLowSelectionWarningOpen(false)}>Go back</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setLowSelectionWarningOpen(false);
+              navigate("/select-dimensions");
+            }}
+          >
+            Continue anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

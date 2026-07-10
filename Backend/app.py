@@ -22,6 +22,7 @@ from dowhy import CausalModel
 print(">>> AFTER dowhy import")
 
 import json
+import math
 import numpy as np
 import pm4py
 
@@ -47,6 +48,7 @@ from process_mining.conformance_alignments import (
     get_trace_sequences,
     get_all_activities_from_bpmn,
     get_all_activities_from_model,
+    get_activity_order_from_model,
     build_trace_deviation_matrix_df
 )
 
@@ -61,6 +63,32 @@ from sklearn.tree import DecisionTreeClassifier, _tree
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
+
+
+def _sanitize_nan(obj):
+    """Recursively replace NaN/Infinity floats with None so json.dumps produces
+    spec-valid JSON — Python's encoder emits bare NaN/Infinity by default, which the
+    browser's strict JSON.parse rejects, surfacing as a misleading 'could not reach
+    the backend' network error on the frontend even though the request succeeded."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
+
+
+@app.after_request
+def _sanitize_json_response(response):
+    if response.mimetype == "application/json":
+        try:
+            data = response.get_json()
+        except Exception:
+            return response
+        if data is not None:
+            response.set_data(json.dumps(_sanitize_nan(data)))
+    return response
 
 
 def _layout_bpmn(bpmn_graph, h_spacing=220, v_spacing=130, node_w=120, node_h=60, event_size=36, gw_size=50):
@@ -2089,6 +2117,14 @@ def compute_causal_effects():
                 })
                 continue
 
+            if math.isnan(ate_val) or (ate_p is not None and math.isnan(ate_p)):
+                results.append({
+                    "deviation": dev,
+                    "dimension": dim,
+                    "error": f"[{dim} × {dev}] Causal estimate is not a number (NaN) — '{dim}' may be constant, mostly missing, or numerically degenerate for this deviation. Check how the dimension is defined."
+                })
+                continue
+
             # ── Length-conditioned CATE ──────────────────────────────────────
             cate_val, cate_p, cate_error = None, None, None
             if df_sub is not df:  # only when a real subset was found
@@ -2097,6 +2133,9 @@ def compute_causal_effects():
                 else:
                     try:
                         cate_val, cate_p = _run_causal(df_sub, dev, dim)
+                        if math.isnan(cate_val) or (cate_p is not None and math.isnan(cate_p)):
+                            cate_val, cate_p = None, None
+                            cate_error = "CATE estimate is not a number (NaN) in the length-matched subset."
                     except Exception as e:
                         cate_error = str(e)
 
@@ -2326,10 +2365,16 @@ def api_model_content():
 
     ext = os.path.splitext(model_path)[1].lower()
 
+    try:
+        activity_order = get_activity_order_from_model(model_path)
+    except Exception as order_err:
+        print(f"Activity order extraction failed ({order_err})")
+        activity_order = []
+
     if ext == '.bpmn':
         with open(model_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        return jsonify({"type": "bpmn", "content": content})
+        return jsonify({"type": "bpmn", "content": content, "activity_order": activity_order})
     elif ext == '.pnml':
         from process_mining.conformance_alignments import read_model_as_petri_net
         net, im, fm = read_model_as_petri_net(model_path)
@@ -2338,13 +2383,14 @@ def api_model_content():
             gviz = pn_visualizer.apply(net, im, fm,
                                        parameters={pn_visualizer.Variants.WO_DECORATION.value.Parameters.FORMAT: "svg"})
             svg_content = pn_visualizer.serialize(gviz).decode('utf-8')
-            return jsonify({"type": "pnml", "content": svg_content})
+            return jsonify({"type": "pnml", "content": svg_content, "activity_order": activity_order})
         except Exception as viz_err:
             print(f"Petri net visualization failed ({viz_err}), falling back to info")
             activities = sorted(set(t.label for t in net.transitions if t.label))
             return jsonify({
                 "type": "pnml_info",
                 "activities": activities,
+                "activity_order": activity_order,
                 "n_places": len(net.places),
                 "n_transitions": len(net.transitions),
                 "n_arcs": len(net.arcs),

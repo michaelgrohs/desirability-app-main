@@ -19,10 +19,13 @@ window.fetch = async (...args) => {
   return response;
 };
 
-// On any hard page load (fresh open or reload), always start from the home page
+// On any hard page load (fresh open or reload), always start from the home page —
+// except for standalone routes that are designed to be opened fresh (e.g. the
+// process model reference page, meant to be opened in its own tab).
+const STANDALONE_ROUTES = ["/model-reference"];
 const navEntry = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming;
 if (navEntry && (navEntry.type === "navigate" || navEntry.type === "reload")) {
-  if (window.location.pathname !== "/") {
+  if (window.location.pathname !== "/" && !STANDALONE_ROUTES.includes(window.location.pathname)) {
     window.history.replaceState({}, "", "/");
   }
 }

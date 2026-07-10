@@ -33,6 +33,7 @@ import {
 import InfoIcon from "@mui/icons-material/Info";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import CloseIcon from "@mui/icons-material/Close";
 import { useNavigate } from "react-router-dom";
 import { useEffect } from 'react';
 import { useBottomNav } from './BottomNavContext';
@@ -89,6 +90,8 @@ const SelectDimensions: React.FC = () => {
     setSelectedDimensions,
     dimensionConfigs: configs,
     setDimensionConfigs: setConfigs,
+    dimensionMeta,
+    setDimensionMeta,
     conformanceMode,
   } = useFileContext();
 
@@ -104,6 +107,19 @@ const SelectDimensions: React.FC = () => {
   const [matrixRows, setMatrixRows] = useState<any[]>([]);
   const [allDeviationCols, setAllDeviationCols] = useState<Set<string>>(new Set());
   const [timeConstraintCols, setTimeConstraintCols] = useState<{col_name: string; label: string; time_condition: any}[]>([]);
+
+  // Impact matrix visibility (hidden by default)
+  const [showMatrix, setShowMatrix] = useState(false);
+
+  // Activity order: BPMN document order (from model file) or, for declarative modes,
+  // average first-position order derived from the event log
+  const [activityOrder, setActivityOrder] = useState<string[]>([]);
+
+  // Custom dimension definition dialog
+  const [customDimDialogOpen, setCustomDimDialogOpen] = useState(false);
+  const [customDimName, setCustomDimName] = useState("");
+  const [customDimPolarity, setCustomDimPolarity] = useState<"higher_better" | "lower_better">("higher_better");
+  const [customDimBinary, setCustomDimBinary] = useState(false);
 
   useEffect(() => {
     fetch(`${API_URL}/api/current-impact-matrix`)
@@ -134,10 +150,40 @@ const SelectDimensions: React.FC = () => {
       .catch(() => {});
   }, [conformanceMode]);
 
+  // Activity order for BPMN mode: fetched from the uploaded model file (document order of tasks)
+  useEffect(() => {
+    if (conformanceMode !== 'bpmn') return;
+    fetch(`${API_URL}/api/model-content`)
+      .then(res => res.json())
+      .then(data => setActivityOrder(data.activity_order ?? []))
+      .catch(() => {});
+  }, [conformanceMode]);
+
+  // Activity order for declarative modes: no explicit process model, so approximate the
+  // "most frequent order" by averaging each activity's position across all traces
+  useEffect(() => {
+    if (conformanceMode === 'bpmn') return;
+    if (matrixRows.length === 0) return;
+    const activitiesCol = matrixColumns.find(c => matrixRows.some((r: any) => Array.isArray(r[c])));
+    if (!activitiesCol) return;
+    const posSum: Record<string, number> = {};
+    const posCount: Record<string, number> = {};
+    matrixRows.forEach((row: any) => {
+      const seq = row[activitiesCol];
+      if (!Array.isArray(seq)) return;
+      seq.forEach((act: string, idx: number) => {
+        posSum[act] = (posSum[act] || 0) + idx;
+        posCount[act] = (posCount[act] || 0) + 1;
+      });
+    });
+    const order = Object.keys(posSum).sort((a, b) => posSum[a] / posCount[a] - posSum[b] / posCount[b]);
+    setActivityOrder(order);
+  }, [conformanceMode, matrixColumns, matrixRows]);
+
   // ---------------------------
   // Toggle dimension selection
   // ---------------------------
-  const toggleDimension = (dimension: Dimension) => {
+  const toggleDimension = (dimension: string) => {
     setSelectedDimensions((prev: string[]) =>
       prev.includes(dimension)
         ? prev.filter(d => d !== dimension)
@@ -154,6 +200,53 @@ const SelectDimensions: React.FC = () => {
       }
     }));
   };
+
+  // ---------------------------
+  // Custom dimension: define / remove
+  // ---------------------------
+  const slugify = (s: string) =>
+    s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "custom_dimension";
+
+  const addCustomDimension = () => {
+    if (!customDimName.trim()) return;
+    const base = slugify(customDimName);
+    let id = base;
+    let suffix = 1;
+    while (dimensionMeta[id] || (availableDimensions as string[]).includes(id)) {
+      id = `${base}_${suffix++}`;
+    }
+
+    setDimensionMeta(prev => ({
+      ...prev,
+      [id]: { label: customDimName.trim(), polarity: customDimPolarity, isBinary: customDimBinary, isCustom: true },
+    }));
+    setSelectedDimensions(prev => [...prev, id]);
+    setConfigs(prev => ({
+      ...prev,
+      [id]: { dimension: id, computationType: "existing", config: {} },
+    }));
+
+    setCustomDimName("");
+    setCustomDimPolarity("higher_better");
+    setCustomDimBinary(false);
+    setCustomDimDialogOpen(false);
+  };
+
+  const removeCustomDimension = (id: string) => {
+    setSelectedDimensions(prev => prev.filter(d => d !== id));
+    setConfigs(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setDimensionMeta(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const customDimensionIds = Object.keys(dimensionMeta).filter(id => dimensionMeta[id]?.isCustom);
 
   // ---------------------------
   // Update config
@@ -322,15 +415,24 @@ const SelectDimensions: React.FC = () => {
 
   const getColumnUniqueValues = (col: string): string[] => {
     const values = new Set<string>();
+    let isArrayCol = false;
     matrixRows.forEach((row) => {
       const val = row[col];
       if (val === null || val === undefined) return;
       if (Array.isArray(val)) {
+        isArrayCol = true;
         val.forEach((v: string) => values.add(String(v)));
       } else {
         values.add(String(val));
       }
     });
+    // Activity-sequence columns: order by the activity's position in the model
+    // (BPMN document order, or average log position for declarative modes)
+    if (isArrayCol && activityOrder.length > 0) {
+      const ordered = activityOrder.filter((a) => values.has(a));
+      const remaining = Array.from(values).filter((v) => !activityOrder.includes(v)).sort();
+      return [...ordered, ...remaining];
+    }
     return Array.from(values).sort();
   };
 
@@ -343,12 +445,25 @@ const SelectDimensions: React.FC = () => {
   };
 
   // ---------------------------
+  // Dimension name registry (built-ins + any custom dimensions defined by the user)
+  // ---------------------------
+  const DIMENSION_NAMES = useMemo(() => new Set(Object.keys(dimensionMeta)), [dimensionMeta]);
+
+  // Keywords used to suggest "Use existing column" quick-applies per dimension.
+  // Outcome intentionally has none — see the dedicated hint rendered for it below.
+  const DIMENSION_KEYWORDS: Record<string, string[]> = {
+    time: ["duration", "seconds", "elapsed", "timestamp"],
+    costs: ["cost", "costs", "amount", "price", "expense", "fee"],
+    quality: ["quality", "rework", "redo", "error", "defect"],
+    compliance: ["compliance", "compliant", "violation", "breach"],
+  };
+
+  // ---------------------------
   // Dimension suggestions (data-driven, defined after getColumnRange)
   // ---------------------------
   interface DimSuggestion { label: string; note: string; config: { computationType: ComputationType; config: any } }
 
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const dimensionSuggestions: Record<Dimension, DimSuggestion[]> = useMemo(() => {
+  const getDimensionSuggestions = (dim: string): DimSuggestion[] => {
     const durationCol = matrixColumns.find(c =>
       c === 'trace_duration_seconds' || c.toLowerCase().includes('trace_duration')
     );
@@ -358,53 +473,75 @@ const SelectDimensions: React.FC = () => {
     // find the activity-sequence column (contains arrays)
     const activitiesCol = matrixColumns.find(c => matrixRows.some((r: any) => Array.isArray(r[c])));
 
-    return {
-      time: [
-        ...(durationCol ? [
-          {
-            label: `Use "${durationCol}" directly (seconds)`,
-            note: 'Maps time to the duration column as-is. Lower = faster.',
-            config: { computationType: 'existing' as ComputationType, config: { column: durationCol } },
-          },
-          {
-            label: `"${durationCol}" ÷ 3600 → hours`,
-            note: 'Formula: converts seconds to hours for a more readable scale.',
-            config: { computationType: 'formula' as ComputationType, config: { expression: `${durationCol}/3600` } },
-          },
-        ] : []),
-      ],
-      costs: [],
-      quality: [
-        ...reworkCols.map(col => {
-          const [, rMax] = getColumnRange(col);
-          return {
-            label: `${col} < 2  (low rework = good quality)`,
-            note: `Quality = 1 if ${col} < 2, else 0. Column range: 0–${rMax.toLocaleString('en-US', { maximumFractionDigits: 1 })}.`,
-            config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: col, operator: 'less', value: '2' }] } },
-          };
-        }),
-        ...(activitiesCol ? [{
+    const suggestions: DimSuggestion[] = [];
+
+    if (dim === 'time' && durationCol) {
+      suggestions.push(
+        {
+          label: `Use "${durationCol}" directly (seconds)`,
+          note: 'Maps time to the duration column as-is. Lower = faster.',
+          config: { computationType: 'existing', config: { column: durationCol } },
+        },
+        {
+          label: `"${durationCol}" ÷ 3600 → hours`,
+          note: 'Formula: converts seconds to hours for a more readable scale.',
+          config: { computationType: 'formula', config: { expression: `${durationCol}/3600` } },
+        },
+      );
+    }
+
+    if (dim === 'quality') {
+      reworkCols.forEach(col => {
+        const [, rMax] = getColumnRange(col);
+        suggestions.push({
+          label: `${col} < 2  (low rework = good quality)`,
+          note: `Quality = 1 if ${col} < 2, else 0. Column range: 0–${rMax.toLocaleString('en-US', { maximumFractionDigits: 1 })}.`,
+          config: { computationType: 'rule', config: { conditions: [{ column: col, operator: 'less', value: '2' }] } },
+        });
+      });
+      if (activitiesCol) {
+        suggestions.push({
           label: 'Specific activity occurred → quality met',
           note: 'Quality = 1 if the activity sequence contains a chosen activity. Fill in the activity name below.',
-          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
-        }] : []),
-      ],
-      outcome: [
-        ...(activitiesCol ? [{
-          label: 'Desired activity occurred in trace',
-          note: 'Outcome = 1 if the activity sequence contains a chosen activity. Fill in the activity name below.',
-          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
-        }] : []),
-      ],
-      compliance: [
-        {
-          label: 'Forbidden activity absent  (choose column)',
-          note: 'Compliance = 1 if a problematic activity did NOT occur. Select the column below after applying.',
-          config: { computationType: 'rule' as ComputationType, config: { conditions: [{ column: '', operator: 'equals', value: '0' }] } },
-        },
-      ],
-    };
-  }, [matrixColumns, matrixRows]); // eslint-disable-line react-hooks/exhaustive-deps
+          config: { computationType: 'rule', config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
+        });
+      }
+    }
+
+    if (dim === 'outcome' && activitiesCol) {
+      suggestions.push({
+        label: 'Desired activity occurred in trace',
+        note: 'Outcome = 1 if the activity sequence contains a chosen activity. Fill in the activity name below.',
+        config: { computationType: 'rule', config: { conditions: [{ column: activitiesCol, operator: 'contains', value: '' }] } },
+      });
+    }
+
+    if (dim === 'compliance') {
+      suggestions.push({
+        label: 'Forbidden activity absent  (choose column)',
+        note: 'Compliance = 1 if a problematic activity did NOT occur. Select the column below after applying.',
+        config: { computationType: 'rule', config: { conditions: [{ column: '', operator: 'equals', value: '0' }] } },
+      });
+    }
+
+    return suggestions;
+  };
+
+  // Keyword-matched columns: surfaced as a hint ("may be a good starting point"),
+  // not a one-click quick-apply — the user still has to decide how to map them.
+  // Built-in dims use a curated keyword list; custom dimensions derive keywords from their own name.
+  const getKeywordMatchedColumns = (dim: string): string[] => {
+    const meta = dimensionMeta[dim];
+    const keywords = DIMENSION_KEYWORDS[dim]
+      ?? (meta?.isCustom ? meta.label.toLowerCase().split(/[^a-z0-9]+/i).filter(w => w.length > 2) : []);
+    if (keywords.length === 0) return [];
+
+    return matrixColumns.filter(col => {
+      if (col === 'trace_id' || col === 'activities' || DIMENSION_NAMES.has(col)) return false;
+      const lc = col.toLowerCase();
+      return keywords.some(k => lc.includes(k));
+    });
+  };
 
   // Columns usable in rule conditions: exclude only trace_id
   const ruleColumns = matrixColumns.filter((col) => col !== "trace_id");
@@ -416,7 +553,6 @@ const SelectDimensions: React.FC = () => {
   // ---------------------------
   // Matrix display helpers
   // ---------------------------
-  const DIMENSION_NAMES = new Set(["time", "costs", "quality", "outcome", "compliance"]);
   const selectedDevNames = new Set((selectedDeviations as any[]).map((d: any) => d.column));
 
   // Detect ALL deviation indicator columns: binary (0/1) values, not a dimension or known base col
@@ -537,6 +673,38 @@ const SelectDimensions: React.FC = () => {
         </Tooltip>
       ))}
 
+      {customDimensionIds.map(id => (
+        <Box key={id} display="inline-flex" alignItems="center">
+          <Tooltip
+            title={`Custom dimension — ${dimensionMeta[id].polarity === 'lower_better' ? 'lower values are better' : 'higher values are better'}${dimensionMeta[id].isBinary ? ', encoded as binary (0/1)' : ''}.`}
+            arrow
+            placement="right"
+          >
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={selectedDimensions.includes(id)}
+                  onChange={() => toggleDimension(id)}
+                />
+              }
+              label={dimensionMeta[id].label}
+            />
+          </Tooltip>
+          <IconButton size="small" onClick={() => removeCustomDimension(id)} title="Remove custom dimension" sx={{ ml: -0.5 }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
+      ))}
+
+      <Button
+        size="small"
+        variant="outlined"
+        onClick={() => setCustomDimDialogOpen(true)}
+        sx={{ ml: 1, verticalAlign: 'middle' }}
+      >
+        + Add custom dimension
+      </Button>
+
       <Divider sx={{ my: 4 }} />
 
       {selectedDimensions.map(dim => {
@@ -545,17 +713,39 @@ const SelectDimensions: React.FC = () => {
           <CardContent>
 
             <Typography variant="h6">
-              Configure: {dim}
+              Configure: {dimensionMeta[dim]?.label ?? dim}
             </Typography>
 
             {(() => {
-              const desc = dimensionDescriptions[dim as Dimension];
-              const suggestions = dimensionSuggestions[dim as Dimension] || [];
+              const isBuiltin = (availableDimensions as string[]).includes(dim);
+              const meta = dimensionMeta[dim];
+              const desc = isBuiltin
+                ? dimensionDescriptions[dim as Dimension]
+                : `Custom dimension: ${meta?.polarity === 'lower_better' ? 'lower values are better' : 'higher values are better'}${meta?.isBinary ? ', encoded as a binary (0/1) indicator' : ''}. Map it to a column, formula, or rule below.`;
+              const suggestions = getDimensionSuggestions(dim);
+              const matchedColumns = getKeywordMatchedColumns(dim);
+              const showOutcomeHint = dim === 'outcome';
+              const showNoMatchNote = suggestions.length === 0 && matchedColumns.length === 0 && !showOutcomeHint;
               return (
                 <Box sx={{ mt: 1.5, mb: 0.5, p: 1.25, backgroundColor: '#f0f4ff', borderRadius: 1, border: '1px solid #c5d0f0' }}>
-                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: suggestions.length ? 1 : 0 }}>
+                  <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: (suggestions.length || matchedColumns.length || showOutcomeHint || showNoMatchNote) ? 1 : 0 }}>
                     {desc}
                   </Typography>
+                  {showOutcomeHint && (
+                    <Typography variant="caption" sx={{ display: 'block', color: '#1a237e', mb: 1 }}>
+                      A good starting point for Outcome is often to check whether a specific activity occurred in a trace (e.g. a successful closure or approval step) — see the quick-apply suggestion below, or use a Binary Rule with the "Contains activity" operator on the activities column.
+                    </Typography>
+                  )}
+                  {matchedColumns.length > 0 && (
+                    <Typography variant="caption" sx={{ display: 'block', color: '#1a237e', mb: suggestions.length ? 1 : 0 }}>
+                      Possible good column{matchedColumns.length > 1 ? 's' : ''} to start from (name matches "{meta?.label ?? dim}"-related keywords): {matchedColumns.map((c, i) => (
+                        <React.Fragment key={c}>
+                          {i > 0 && ', '}
+                          <Box component="span" sx={{ fontWeight: 600 }}>{c}</Box>
+                        </React.Fragment>
+                      ))}
+                    </Typography>
+                  )}
                   {suggestions.length > 0 && (
                     <>
                       <Typography variant="caption" sx={{ display: 'block', color: '#1a237e', fontWeight: 600, mb: 0.5 }}>
@@ -583,6 +773,11 @@ const SelectDimensions: React.FC = () => {
                       ))}
                     </>
                   )}
+                  {showNoMatchNote && (
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontStyle: 'italic' }}>
+                      No directly matchable columns were found for "{meta?.label ?? dim}" in your data. Apply your domain knowledge to define this dimension using a formula or binary rule.
+                    </Typography>
+                  )}
                 </Box>
               );
             })()}
@@ -598,7 +793,9 @@ const SelectDimensions: React.FC = () => {
                   })
                 }
               >
-                {(["existing", "formula", "rule"] as ComputationType[]).map((ct) => (
+                {(["existing", "formula", "rule"] as ComputationType[])
+                  .filter((ct) => !(ct === "rule" && (dim === "time" || dim === "costs")))
+                  .map((ct) => (
                   <FormControlLabel
                     key={ct}
                     value={ct}
@@ -1100,13 +1297,26 @@ const SelectDimensions: React.FC = () => {
 
         <Divider sx={{ my: 5 }} />
 
-        <Box display="flex" alignItems="center" mb={1} gap={2}>
+        <Box
+          display="flex"
+          alignItems="center"
+          mb={1}
+          gap={2}
+          sx={{ cursor: "pointer", userSelect: "none" }}
+          onClick={() => setShowMatrix(v => !v)}
+        >
+          <IconButton size="small" sx={{ p: 0.25 }}>
+            <ExpandMoreIcon sx={{ transform: showMatrix ? "rotate(180deg)" : "none", transition: "transform 0.2s" }} />
+          </IconButton>
           <Typography variant="h6">Current Impact Matrix</Typography>
-          {nonSelectedDevCols.length > 0 && (
+          <Typography variant="body2" color="text.secondary">
+            {showMatrix ? "(click to hide)" : "(click to show)"}
+          </Typography>
+          {showMatrix && nonSelectedDevCols.length > 0 && (
             <Button
               size="small"
               variant="outlined"
-              onClick={() => setShowNonSelected(prev => !prev)}
+              onClick={(e) => { e.stopPropagation(); setShowNonSelected(prev => !prev); }}
             >
               {showNonSelected
                 ? "Hide Non-selected Deviations"
@@ -1115,6 +1325,8 @@ const SelectDimensions: React.FC = () => {
           )}
         </Box>
 
+        {showMatrix && (
+        <>
         <Box sx={{ overflowX: "auto", maxHeight: 420, overflowY: "auto", border: "1px solid #e0e0e0", borderRadius: 1 }}>
           <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 700 }}>
             <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
@@ -1246,6 +1458,8 @@ const SelectDimensions: React.FC = () => {
             Showing first 200 of {matrixRows.length} rows.
           </Typography>
         )}
+        </>
+        )}
 
       {/* Warning dialog: unassigned time-constraint columns */}
       <Dialog open={pendingSubmit} onClose={() => { setUnselectedWarning([]); setPendingSubmit(false); }}>
@@ -1275,6 +1489,42 @@ const SelectDimensions: React.FC = () => {
             onClick={() => { setUnselectedWarning([]); setPendingSubmit(false); handleSubmit(true); }}
           >
             Proceed anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Define a new custom dimension */}
+      <Dialog open={customDimDialogOpen} onClose={() => setCustomDimDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Define a new dimension</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Dimension name"
+            value={customDimName}
+            onChange={(e) => setCustomDimName(e.target.value)}
+            sx={{ mt: 1 }}
+          />
+          <FormControl sx={{ mt: 2 }}>
+            <FormLabel>Which direction is desirable?</FormLabel>
+            <RadioGroup
+              value={customDimPolarity}
+              onChange={(e) => setCustomDimPolarity(e.target.value as "higher_better" | "lower_better")}
+            >
+              <FormControlLabel value="higher_better" control={<Radio />} label="Higher values are better" />
+              <FormControlLabel value="lower_better" control={<Radio />} label="Lower values are better" />
+            </RadioGroup>
+          </FormControl>
+          <FormControlLabel
+            sx={{ mt: 1, display: "flex" }}
+            control={<Checkbox checked={customDimBinary} onChange={(e) => setCustomDimBinary(e.target.checked)} />}
+            label="Binary indicator (0 = undesired, 1 = desired)"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCustomDimDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={addCustomDimension} disabled={!customDimName.trim()}>
+            Add dimension
           </Button>
         </DialogActions>
       </Dialog>

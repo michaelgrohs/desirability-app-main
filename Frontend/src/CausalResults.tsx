@@ -20,11 +20,12 @@ import {
   AccordionDetails,
   ToggleButton,
   ToggleButtonGroup,
+  TextField,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 
 import { useLocation, useNavigate } from "react-router-dom";
-import { useFileContext } from "./FileContext";
+import { useFileContext, DimensionMeta } from "./FileContext";
 import { useBottomNav } from "./BottomNavContext";
 
 const API_URL = process.env.REACT_APP_API_URL;
@@ -94,10 +95,19 @@ const BINARY_DIMENSIONS = new Set(["outcome", "compliance", "quality"]);
 
 const capDim = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-const getAteTooltip = (dimension: string, deviation: string, ate: number): string => {
+const SIGNIFICANCE_THRESHOLD = 0.05;
+const isSignificant = (p: number | null | undefined): boolean => p != null && p < SIGNIFICANCE_THRESHOLD;
+
+const getAteTooltip = (
+  dimension: string,
+  deviation: string,
+  ate: number,
+  dimensionMeta: Record<string, DimensionMeta> = {}
+): string => {
   if (!isFinite(ate)) return "";
   const dimLower = dimension.toLowerCase();
-  const isBinary = BINARY_DIMENSIONS.has(dimLower);
+  const meta = dimensionMeta[dimension] || dimensionMeta[dimLower];
+  const isBinary = meta ? meta.isBinary : BINARY_DIMENSIONS.has(dimLower);
   const direction = ate < 0 ? "decreased" : "increased";
   const absAte = Math.abs(ate);
 
@@ -105,10 +115,44 @@ const getAteTooltip = (dimension: string, deviation: string, ate: number): strin
     const pct = (absAte * 100).toLocaleString('en-US', { maximumFractionDigits: 1 });
     return `ATE: the likelihood of a positive ${dimension} is ${direction} on average by ${pct}% if "${deviation}" happens (global, all traces).`;
   } else {
-    const fmtAbs = absAte.toLocaleString('en-US', { maximumFractionDigits: 2 });
-    const fmtAte = ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtAbs = absAte.toLocaleString('en-US', { maximumFractionDigits: 1 });
+    const fmtAte = ate.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     return `ATE = ${fmtAte}. ${dimension} is ${direction} by ${fmtAbs} on average whenever "${deviation}" occurs (global, all traces).`;
   }
+};
+
+const PValueBadge: React.FC<{ p: number | null | undefined }> = ({ p }) => {
+  const label = p != null ? p.toFixed(3) : "—";
+  if (isSignificant(p)) {
+    return (
+      <Typography component="span" variant="caption">
+        ({label})
+      </Typography>
+    );
+  }
+  return (
+    <Tooltip title={`Not statistically significant (p ≥ ${SIGNIFICANCE_THRESHOLD}) — interpret this effect with caution.`} arrow>
+      <Box
+        component="span"
+        sx={{
+          display: "inline-block",
+          ml: 0.4,
+          px: 0.6,
+          py: "1px",
+          borderRadius: "4px",
+          fontSize: "0.65rem",
+          fontWeight: 700,
+          color: "#e65100",
+          backgroundColor: "rgba(255,152,0,0.28)",
+          border: "1px solid rgba(230,81,0,0.6)",
+          cursor: "help",
+          whiteSpace: "nowrap",
+        }}
+      >
+        ({label}) n.s.
+      </Box>
+    </Tooltip>
+  );
 };
 
 const levelColor = (level: CriticalityLevel) => {
@@ -129,7 +173,7 @@ const CausalResults: React.FC = () => {
   const location = useLocation();
   const { setContinue } = useBottomNav();
 
-  const { selectedDeviations, resetAll } = useFileContext();
+  const { selectedDeviations, resetAll, dimensionMeta } = useFileContext();
 
   const handleReset = () => {
     resetAll();
@@ -144,7 +188,11 @@ const CausalResults: React.FC = () => {
     [dimension: string]: CriticalityLevel[];
   }>({});
 
-  // boundaries per dimension = cut points between levels
+  // boundaries per dimension: ALWAYS the 6 canonical gap values, one for each gap
+  // between the 7 canonical levels (in value-ascending order for that dimension's
+  // polarity) — independent of which levels are currently selected. This means
+  // deselecting a level never destroys or shifts other thresholds, and re-selecting
+  // it later restores its remembered value.
   const [boundaries, setBoundaries] = useState<{
     [dim: string]: number[];
   }>({});
@@ -152,11 +200,19 @@ const CausalResults: React.FC = () => {
   // per-dimension: which basis (ate|cate) to use for criticality thresholds
   const [criticalityBasis, setCriticalityBasis] = useState<{ [dim: string]: 'ate' | 'cate' }>({});
 
+  // per-dimension: how to edit thresholds — draggable slider or numeric text boxes
+  const [criticalityInputMode, setCriticalityInputMode] = useState<{ [dim: string]: 'slider' | 'numeric' }>({});
+
   const getCellColor = (dimension: string, ate: number, maxAbs: number) => {
     if (ate === undefined || maxAbs === 0) return "#fff";
     const intensity = Math.max(Math.min(Math.abs(ate) / maxAbs, 1), 0.15);
-    const isNegativeGood = ["time", "costs"].includes(dimension.toLowerCase());
-    const isPositiveGood = ["outcome", "quality", "compliance"].includes(dimension.toLowerCase());
+    const meta = dimensionMeta[dimension] || dimensionMeta[dimension.toLowerCase()];
+    const isNegativeGood = meta
+      ? meta.polarity === "lower_better"
+      : ["time", "costs"].includes(dimension.toLowerCase());
+    const isPositiveGood = meta
+      ? meta.polarity === "higher_better"
+      : ["outcome", "quality", "compliance"].includes(dimension.toLowerCase());
     let isGood = false;
     if (isNegativeGood) isGood = ate < 0;
     else if (isPositiveGood) isGood = ate > 0;
@@ -164,17 +220,52 @@ const CausalResults: React.FC = () => {
     return isGood ? `rgba(76,175,80,${intensity})` : `rgba(211,47,47,${intensity})`;
   };
 
-  const isNegativeGoodDim = (dim: string) =>
-    ["time", "costs"].includes(dim.toLowerCase());
+  const isNegativeGoodDim = (dim: string) => {
+    const meta = dimensionMeta[dim] || dimensionMeta[dim.toLowerCase()];
+    return meta ? meta.polarity === "lower_better" : ["time", "costs"].includes(dim.toLowerCase());
+  };
 
   const levelsForDim = (dim: string) => {
     const lvls = selectedLevels[dim] || [];
     return isNegativeGoodDim(dim) ? [...lvls].reverse() : lvls;
   };
 
-  const sortedCutsForDim = (dim: string) => {
-    const cuts = boundaries[dim] || [];
-    return [...cuts].sort((a, b) => a - b);
+  // The 7 canonical levels in value-ascending order for this dimension's polarity —
+  // i.e. the order in which the 6 canonical gap values in `boundaries[dim]` apply.
+  const fullDisplayOrderForDim = (dim: string): CriticalityLevel[] =>
+    isNegativeGoodDim(dim) ? [...LEVEL_ORDER].reverse() : LEVEL_ORDER;
+
+  // Derives the currently-active cut points (one fewer than the number of selected
+  // levels) from the persistent 6-gap array, by picking — for each pair of adjacent
+  // selected levels — the canonical gap that immediately precedes the "less extreme"
+  // one. This is what makes deselecting a level merge its range into its more-extreme
+  // neighbor: e.g. removing "slightly negative" drops the negative/slightly-negative
+  // gap and keeps the slightly-negative/neutral gap as the new negative/neutral edge.
+  const sortedCutsForDim = (dim: string): number[] => {
+    const gapArr = boundaries[dim] || [];
+    const fullOrder = fullDisplayOrderForDim(dim);
+    const displayLevels = levelsForDim(dim);
+    const cuts: number[] = [];
+    for (let i = 1; i < displayLevels.length; i++) {
+      const pos = fullOrder.indexOf(displayLevels[i]);
+      const gapVal = gapArr[pos - 1];
+      if (gapVal !== undefined) cuts.push(gapVal);
+    }
+    return cuts;
+  };
+
+  // Maps an active cut index (position within the currently-displayed cuts) back to
+  // its canonical gap slot in boundaries[dim], and commits a new value for just that slot.
+  const commitBoundaryAtActiveIndex = (dim: string, activeIdx: number, value: number) => {
+    const fullOrder = fullDisplayOrderForDim(dim);
+    const displayLevels = levelsForDim(dim);
+    const pos = fullOrder.indexOf(displayLevels[activeIdx + 1]);
+    if (pos < 1) return;
+    setBoundaries((prev) => {
+      const gapArr = (prev[dim] || []).slice();
+      gapArr[pos - 1] = value;
+      return { ...prev, [dim]: gapArr };
+    });
   };
 
   const maxAbsEffect = React.useMemo(() => {
@@ -212,14 +303,14 @@ const CausalResults: React.FC = () => {
     });
   }, [dimensions]);
 
-  // default boundaries: ±5% = neutral, ±25% = slightly, ±50% = moderate, beyond = very
+  // default boundaries: ±5% = neutral, ±25% = slightly, ±50% = moderate, beyond = very.
+  // Initialized once per dimension as the full 6-slot canonical gap array — independent
+  // of which levels happen to be selected at the time.
   useEffect(() => {
     if (!dimensions.length || !results.length) return;
     const updated: { [dim: string]: number[] } = {};
     dimensions.forEach((dim) => {
-      const levels = selectedLevels[dim] || [];
-      if (levels.length < 2) return;
-      if (boundaries[dim] && boundaries[dim].length === levels.length - 1) return;
+      if (boundaries[dim] && boundaries[dim].length === LEVEL_ORDER.length - 1) return;
       const values = results
         .filter((r) => r.dimension === dim)
         .flatMap((r) => (r.cate != null ? [r.ate, r.cate] : [r.ate]))
@@ -233,7 +324,7 @@ const CausalResults: React.FC = () => {
       setBoundaries((prev) => ({ ...prev, ...updated }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimensions, results, selectedLevels]);
+  }, [dimensions, results]);
 
   // default criticalityBasis: 'cate' if any CATE value exists for the dim, else 'ate'
   useEffect(() => {
@@ -318,7 +409,7 @@ const CausalResults: React.FC = () => {
             <strong>ATE (Average Treatment Effect)</strong> compares <em>all</em> deviating traces against <em>all</em> non-deviating traces. It gives the global estimate of the deviation's impact, but may be confounded if deviating traces are systematically shorter or longer (different trace lengths carry different inherent outcomes).
           </Typography>
           <Typography variant="body2" gutterBottom>
-            <strong>CATE (Conditional ATE, length-matched)</strong> restricts the comparison to traces whose total length (number of activities) falls within ±2 of the range observed in deviating traces. This makes the control group (non-deviating traces) more similar in scope, reducing the confound from trace length.
+            <strong>CATE (Conditional ATE, length-matched)</strong> restricts the comparison to a subset of traces whose length (number of activities) falls within the range spanned by the deviating traces, extended by ±2 activities on either side. The same effect estimate is then recomputed on just this subset, so the control group (non-deviating traces) is more comparable in scope, reducing the confound from trace length. If too few traces fall in this range (fewer than 10, or only one side of the deviation is present), a length-matched CATE cannot be reliably estimated and is left blank rather than shown as equal to ATE. Direct cost-attribution dimensions (total cost impact) show only ATE, since they are computed as a direct difference in means rather than a regression estimate and don't require length matching.
           </Typography>
           <Typography variant="body2" gutterBottom>
             <strong>What do differences between ATE and CATE mean?</strong> If they are similar, trace length is likely not a major confounder. If they differ substantially:
@@ -356,6 +447,27 @@ const CausalResults: React.FC = () => {
             </Typography>
           </Box>
         </Box>
+
+        <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, overflow: 'hidden', minWidth: 150 }}>
+          {/* ATE sub-row: insignificant example */}
+          <Box sx={{ backgroundColor: "rgba(211,47,47,0.35)", px: 2, py: 0.75, textAlign: "center", borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
+            <Typography variant="body2" sx={{ fontWeight: "bold", lineHeight: 1.3 }}>
+              −0.12 <PValueBadge p={0.243} />
+            </Typography>
+            <Typography variant="caption" sx={{ color: "text.secondary", display: "block", fontSize: '0.6rem', fontStyle: 'italic' }}>
+              ATE (global) · n=48
+            </Typography>
+          </Box>
+          <Box sx={{ backgroundColor: "rgba(211,47,47,0.25)", px: 2, py: 0.75, textAlign: "center" }}>
+            <Typography variant="body2" sx={{ fontWeight: "bold", lineHeight: 1.3 }}>
+              −0.09 <PValueBadge p={0.31} />
+            </Typography>
+            <Typography variant="caption" sx={{ color: "text.secondary", display: "block", fontSize: '0.6rem', fontStyle: 'italic' }}>
+              CATE · n=22 · 3–9 acts
+            </Typography>
+          </Box>
+        </Box>
+
         <Box sx={{ flex: 1, minWidth: 220 }}>
           <Typography variant="caption" color="text.secondary" display="block">
             <strong>−0.30 (0.021)</strong> = ATE: the deviation reduces the dimension by 0.30 on average across <em>all</em> traces; p&nbsp;=&nbsp;0.021 is significant.
@@ -365,6 +477,9 @@ const CausalResults: React.FC = () => {
           </Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
             Cell color: <span style={{ color: "rgba(211,47,47,0.9)" }}>red = negative impact</span>, <span style={{ color: "rgba(76,175,80,0.9)" }}>green = positive impact</span>; intensity reflects effect size.
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            The orange <strong>n.s.</strong> badge (e.g. <PValueBadge p={0.243} />, third example) flags a <strong>statistically insignificant</strong> effect (p&nbsp;≥&nbsp;0.05, often from a small sample) — treat the direction/magnitude shown there as unreliable. This badge appears wherever p-values are shown, including on the Criticality and Recommendations screens.
           </Typography>
         </Box>
       </Box>
@@ -441,8 +556,8 @@ const CausalResults: React.FC = () => {
                     // Direct time-cost attribution
                     if (result.method === "direct_time_cost") {
                       const tooltipText = result.total_cost !== undefined
-                        ? `Total cost attributed to "${dev}": ${result.total_cost!.toLocaleString('en-US', { maximumFractionDigits: 2 })} ` +
-                          `(avg per violation: ${result.mean_cost_violated!.toLocaleString('en-US', { maximumFractionDigits: 2 })}; ` +
+                        ? `Total cost attributed to "${dev}": ${result.total_cost!.toLocaleString('en-US', { maximumFractionDigits: 1 })} ` +
+                          `(avg per violation: ${result.mean_cost_violated!.toLocaleString('en-US', { maximumFractionDigits: 1 })}; ` +
                           `${result.n_traces_with_cost} of ${result.n_violations} violated traces exceeded the time window)`
                         : "";
                       const hasCost = (result.total_cost ?? 0) > 0;
@@ -450,12 +565,12 @@ const CausalResults: React.FC = () => {
                         <Tooltip key={dev} title={tooltipText} arrow placement="top">
                           <TableCell align="center" sx={{ backgroundColor: hasCost ? "rgba(211,47,47,0.15)" : "rgba(200,200,200,0.1)", minWidth: 140, cursor: "help", borderLeft: "2px solid #e57373", borderBottom: 'none' }}>
                             <Typography variant="body2" sx={{ fontWeight: "bold", color: hasCost ? "#c62828" : "text.secondary" }}>
-                              {result.total_cost !== undefined ? result.total_cost.toLocaleString('en-US', { maximumFractionDigits: 2 }) : "—"}
+                              {result.total_cost !== undefined ? result.total_cost.toLocaleString('en-US', { maximumFractionDigits: 1 }) : "—"}
                             </Typography>
                             <Typography variant="caption" sx={{ color: "text.secondary", display: "block" }}>total cost</Typography>
                             {result.mean_cost_violated !== undefined && result.mean_cost_violated > 0 && (
                               <Typography variant="caption" sx={{ color: "#b71c1c", display: "block" }}>
-                                ø {result.mean_cost_violated.toLocaleString('en-US', { maximumFractionDigits: 2 })} / violation
+                                ø {result.mean_cost_violated.toLocaleString('en-US', { maximumFractionDigits: 1 })} / violation
                               </Typography>
                             )}
                           </TableCell>
@@ -466,15 +581,13 @@ const CausalResults: React.FC = () => {
                     // ATE cell
                     const bgColor = getCellColor(dim, result.ate, maxAbsEffect);
                     return (
-                      <Tooltip key={dev} title={result.ate !== undefined ? getAteTooltip(dim, dev, result.ate) : ""} arrow placement="top">
+                      <Tooltip key={dev} title={result.ate !== undefined ? getAteTooltip(dim, dev, result.ate, dimensionMeta) : ""} arrow placement="top">
                         <TableCell align="center" sx={{ backgroundColor: bgColor, minWidth: 140, cursor: "help", borderBottom: 'none', verticalAlign: 'middle' }}>
                           <Typography variant="body2" fontWeight="bold">
                             {result.ate !== undefined
-                              ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                              ? result.ate.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
                               : "—"}{" "}
-                            <Typography component="span" variant="caption">
-                              ({result.p_value != null ? result.p_value.toFixed(3) : "—"})
-                            </Typography>
+                            <PValueBadge p={result.p_value} />
                           </Typography>
                           {result.n_traces !== undefined && (
                             <Typography variant="caption" sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary' }}>
@@ -532,10 +645,8 @@ const CausalResults: React.FC = () => {
                           >
                             <Box sx={{ cursor: 'help' }}>
                               <Typography variant="body2" fontWeight="bold" sx={{ color: '#1565c0' }}>
-                                {cateVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{' '}
-                                <Typography component="span" variant="caption" sx={{ color: 'text.secondary', fontWeight: 400 }}>
-                                  ({result.cate_p_value != null ? result.cate_p_value.toFixed(3) : '—'})
-                                </Typography>
+                                {cateVal.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}{' '}
+                                <PValueBadge p={result.cate_p_value} />
                               </Typography>
                               {result.cate_n_traces != null && (
                                 <Typography variant="caption" sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary' }}>
@@ -581,6 +692,7 @@ const CausalResults: React.FC = () => {
         {dimensions.map((dim) => {
           const isTimeCostDim = results.some(r => r.dimension === dim && r.method === "direct_time_cost");
           const basis = criticalityBasis[dim] || 'ate';
+          const inputMode = criticalityInputMode[dim] || 'slider';
           const hasCateForDim = results.some((r) => r.dimension === dim && r.cate != null);
 
           const values = results
@@ -648,7 +760,18 @@ const CausalResults: React.FC = () => {
                 )}
               </Box>
 
-              <Typography variant="body2">Select Categories:</Typography>
+              <Box display="flex" alignItems="center" gap={0.5}>
+                <Typography variant="body2">Select Categories:</Typography>
+                <Tooltip
+                  title="Deselecting a category merges its range into its more-extreme neighbor rather than deleting it. Example: removing 'slightly negative' extends 'negative' up to the boundary that used to separate 'slightly negative' from 'neutral'. Each category's threshold is remembered, so re-selecting it later restores where you had it."
+                  arrow
+                  placement="right"
+                >
+                  <Typography variant="caption" sx={{ color: 'text.secondary', textDecoration: 'underline dotted', cursor: 'help' }}>
+                    what happens when I deselect a category?
+                  </Typography>
+                </Tooltip>
+              </Box>
               <FormGroup row>
                 {ALL_LEVELS.map((level) => (
                   <FormControlLabel
@@ -663,25 +786,6 @@ const CausalResults: React.FC = () => {
                             : current.filter((l) => l !== level);
                           const sorted = LEVEL_ORDER.filter((l) => updated.includes(l));
                           setSelectedLevels((prev) => ({ ...prev, [dim]: sorted }));
-                          setBoundaries((prev) => {
-                            const currentCuts = (prev[dim] || []).slice().sort((a, b) => a - b);
-                            const needed = Math.max(sorted.length - 1, 0);
-                            if (currentCuts.length === needed) return prev;
-                            if (currentCuts.length > needed) {
-                              return { ...prev, [dim]: currentCuts.slice(0, needed) };
-                            }
-                            const range = max - min || 1;
-                            const extra = needed - currentCuts.length;
-                            const step = range / (sorted.length || 1);
-                            const startFrom = currentCuts.length
-                              ? currentCuts[currentCuts.length - 1]
-                              : min + step;
-                            const newCuts = [...currentCuts];
-                            for (let i = 0; i < extra; i++) {
-                              newCuts.push(startFrom + step * (i + 1));
-                            }
-                            return { ...prev, [dim]: newCuts.sort((a, b) => a - b) };
-                          });
                         }}
                       />
                     }
@@ -690,60 +794,163 @@ const CausalResults: React.FC = () => {
                 ))}
               </FormGroup>
 
-              <Typography variant="body2" sx={{ mt: 2 }}>
-                {isTimeCostDim ? "Cost Range" : `Effect Range (${basis.toUpperCase()})`}
-              </Typography>
-
-              <Slider
-                value={cuts}
-                min={scaleMin}
-                max={scaleMax}
-                step={(scaleMax - scaleMin) / 500}
-                onChange={(e, newValue) =>
-                  setBoundaries((prev) => ({
-                    ...prev,
-                    [dim]: (newValue as number[]).slice().sort((a, b) => a - b),
-                  }))
-                }
-                valueLabelDisplay="auto"
-                valueLabelFormat={(v) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                track={false}
-                sx={{
-                  height: 8,
-                  "& .MuiSlider-rail": { opacity: 1, backgroundImage: computeGradient(), border: "none" },
-                  "& .MuiSlider-track": { background: "transparent", border: "none" },
-                  "& .MuiSlider-thumb": { zIndex: 2 },
-                }}
-              />
-
-              {/* Cut labels at thumb positions */}
-              <Box sx={{ position: "relative", height: 18, mt: 0.5 }}>
-                <Typography variant="caption" sx={{ position: "absolute", left: 0 }}>
-                  {min.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <Box display="flex" alignItems="center" justifyContent="space-between" sx={{ mt: 2 }}>
+                <Typography variant="body2">
+                  {isTimeCostDim ? "Cost Range" : `Effect Range (${basis.toUpperCase()})`}
                 </Typography>
-                {cuts.map((cut, i) => (
-                  <Typography key={i} variant="caption" sx={{ position: "absolute", left: `${toPct(cut)}%`, transform: "translateX(-50%)", whiteSpace: "nowrap" }}>
-                    {cut.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </Typography>
-                ))}
-                <Typography variant="caption" sx={{ position: "absolute", left: "100%", transform: "translateX(-100%)" }}>
-                  {max.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </Typography>
+                <ToggleButtonGroup
+                  value={inputMode}
+                  exclusive
+                  size="small"
+                  onChange={(_, val) => val && setCriticalityInputMode((prev) => ({ ...prev, [dim]: val }))}
+                >
+                  <ToggleButton value="slider" sx={{ fontSize: '0.7rem', py: 0.3, px: 1.2 }}>Slider</ToggleButton>
+                  <ToggleButton value="numeric" sx={{ fontSize: '0.7rem', py: 0.3, px: 1.2 }}>Numeric</ToggleButton>
+                </ToggleButtonGroup>
               </Box>
 
-              {/* Level labels centered in each segment */}
-              <Box sx={{ position: "relative", height: 18, mt: 0.5 }}>
-                {displayLevels.map((lvl, i) => {
-                  const start = boundariesArr[i];
-                  const end = boundariesArr[i + 1];
-                  const mid = (start + end) / 2;
-                  return (
-                    <Typography key={`${lvl}-${i}`} variant="caption" sx={{ position: "absolute", left: `${toPct(mid)}%`, transform: "translateX(-50%)", whiteSpace: "nowrap", textAlign: "center" }}>
-                      {lvl}
+              {inputMode === 'numeric' ? (() => {
+                // Same wide, all-categories layout as the slider — but boundaries between
+                // adjacent categories are typed in directly instead of dragged. Laid out on
+                // a CSS grid so a "whisker" bracket can sit precisely above each category,
+                // visually spanning the two textboxes that bound it (or the scale edge, for
+                // the outermost categories) — making explicit which numbers define that range.
+                const N = displayLevels.length;
+                const chipCol = (i: number) => 2 + 2 * i;
+                const gridTemplateColumns = [
+                  'auto',
+                  ...Array.from({ length: N }, (_, i) => (i < N - 1 ? ['auto', 'minmax(84px, auto)'] : ['auto'])).flat(),
+                ].join(' ');
+
+                return (
+                  <Box sx={{ overflowX: 'auto', mt: 2 }}>
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns,
+                        gridTemplateRows: 'auto auto',
+                        columnGap: 1,
+                        rowGap: 0.5,
+                        alignItems: 'end',
+                        width: 'fit-content',
+                      }}
+                    >
+                      {/* Whisker brackets — row 1 */}
+                      {displayLevels.map((lvl, i) => {
+                        const hasLeft = i > 0;
+                        const hasRight = i < N - 1;
+                        const startCol = hasLeft ? chipCol(i) - 1 : chipCol(i);
+                        const endCol = (hasRight ? chipCol(i) + 2 : chipCol(i) + 1);
+                        return (
+                          <Box
+                            key={`bracket-${lvl}-${i}`}
+                            sx={{
+                              gridRow: 1,
+                              gridColumn: `${startCol} / ${endCol}`,
+                              height: 7,
+                              borderTop: '1.5px solid',
+                              borderLeft: hasLeft ? '1.5px solid' : 'none',
+                              borderRight: hasRight ? '1.5px solid' : 'none',
+                              borderColor: 'text.disabled',
+                            }}
+                          />
+                        );
+                      })}
+
+                      {/* Min label, chips, textboxes, max label — row 2 */}
+                      <Typography variant="caption" color="text.secondary" sx={{ gridRow: 2, gridColumn: 1 }}>
+                        {min.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                      </Typography>
+                      {displayLevels.map((lvl, i) => (
+                        <React.Fragment key={`${lvl}-${i}`}>
+                          <Box
+                            sx={{
+                              gridRow: 2,
+                              gridColumn: chipCol(i),
+                              px: 1, py: 0.5, borderRadius: 1,
+                              backgroundColor: levelColor(lvl), color: "#fff",
+                              fontSize: 11, fontWeight: 600, whiteSpace: "nowrap", textAlign: 'center',
+                            }}
+                          >
+                            {lvl}
+                          </Box>
+                          {i < N - 1 && (
+                            <TextField
+                              key={`${dim}-cut-${i}-${cuts[i]}`}
+                              size="small"
+                              type="number"
+                              defaultValue={cuts[i]}
+                              onBlur={(e) => {
+                                const parsed = parseFloat(e.target.value.replace(/,/g, ''));
+                                if (!isNaN(parsed)) commitBoundaryAtActiveIndex(dim, i, parsed);
+                              }}
+                              sx={{ gridRow: 2, gridColumn: chipCol(i) + 1 }}
+                              inputProps={{ step: "any", style: { width: 84, textAlign: "center" } }}
+                            />
+                          )}
+                        </React.Fragment>
+                      ))}
+                      <Typography variant="caption" color="text.secondary" sx={{ gridRow: 2, gridColumn: chipCol(N - 1) + 1 }}>
+                        {max.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                      </Typography>
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
+                      Each bracket spans the value range of the category below it — the number(s) it touches are that category's boundaries.
                     </Typography>
-                  );
-                })}
-              </Box>
+                  </Box>
+                );
+              })() : (
+                <>
+                  <Slider
+                    value={cuts}
+                    min={scaleMin}
+                    max={scaleMax}
+                    step={(scaleMax - scaleMin) / 500}
+                    onChange={(_e, newValue) => {
+                      const newCuts = (newValue as number[]).slice().sort((a, b) => a - b);
+                      newCuts.forEach((v, i) => commitBoundaryAtActiveIndex(dim, i, v));
+                    }}
+                    valueLabelDisplay="auto"
+                    valueLabelFormat={(v) => v.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                    track={false}
+                    sx={{
+                      height: 8,
+                      "& .MuiSlider-rail": { opacity: 1, backgroundImage: computeGradient(), border: "none" },
+                      "& .MuiSlider-track": { background: "transparent", border: "none" },
+                      "& .MuiSlider-thumb": { zIndex: 2 },
+                    }}
+                  />
+
+                  {/* Cut labels at thumb positions */}
+                  <Box sx={{ position: "relative", height: 18, mt: 0.5 }}>
+                    <Typography variant="caption" sx={{ position: "absolute", left: 0 }}>
+                      {min.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                    </Typography>
+                    {cuts.map((cut, i) => (
+                      <Typography key={i} variant="caption" sx={{ position: "absolute", left: `${toPct(cut)}%`, transform: "translateX(-50%)", whiteSpace: "nowrap" }}>
+                        {cut.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                      </Typography>
+                    ))}
+                    <Typography variant="caption" sx={{ position: "absolute", left: "100%", transform: "translateX(-100%)" }}>
+                      {max.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+                    </Typography>
+                  </Box>
+
+                  {/* Level labels centered in each segment */}
+                  <Box sx={{ position: "relative", height: 18, mt: 0.5 }}>
+                    {displayLevels.map((lvl, i) => {
+                      const start = boundariesArr[i];
+                      const end = boundariesArr[i + 1];
+                      const mid = (start + end) / 2;
+                      return (
+                        <Typography key={`${lvl}-${i}`} variant="caption" sx={{ position: "absolute", left: `${toPct(mid)}%`, transform: "translateX(-50%)", whiteSpace: "nowrap", textAlign: "center" }}>
+                          {lvl}
+                        </Typography>
+                      );
+                    })}
+                  </Box>
+                </>
+              )}
             </Box>
           );
         })}

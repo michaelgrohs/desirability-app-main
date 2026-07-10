@@ -21,6 +21,21 @@ interface OutcomeBin {
 
 export type ConformanceMode = 'bpmn' | 'declarative' | 'declarative-model';
 
+export interface DimensionMeta {
+  label: string;                                 // display name
+  polarity: 'higher_better' | 'lower_better';     // which direction of ATE is desirable
+  isBinary: boolean;                              // 0/1 probability-style dimension vs. continuous
+  isCustom: boolean;                              // user-defined vs. one of the 5 built-ins
+}
+
+export const BUILTIN_DIMENSION_META: Record<string, DimensionMeta> = {
+  time: { label: 'time', polarity: 'lower_better', isBinary: false, isCustom: false },
+  costs: { label: 'costs', polarity: 'lower_better', isBinary: false, isCustom: false },
+  quality: { label: 'quality', polarity: 'higher_better', isBinary: true, isCustom: false },
+  outcome: { label: 'outcome', polarity: 'higher_better', isBinary: true, isCustom: false },
+  compliance: { label: 'compliance', polarity: 'higher_better', isBinary: true, isCustom: false },
+};
+
 interface DeviationSelection {
   column: string;   // exact matrix column name (e.g., "(Skip A)" or "Precedence_A_B")
   label: string;    // human-readable label
@@ -125,6 +140,10 @@ setTraceSequences: React.Dispatch<React.SetStateAction<TraceSequence[]>>;
   dimensionConfigs: Record<string, any>;
   setDimensionConfigs: React.Dispatch<React.SetStateAction<Record<string, any>>>;
 
+  // Metadata (polarity, binary-ness) for built-in AND user-defined custom dimensions
+  dimensionMeta: Record<string, DimensionMeta>;
+  setDimensionMeta: React.Dispatch<React.SetStateAction<Record<string, DimensionMeta>>>;
+
   // Reset everything
   resetAll: () => void;
 
@@ -153,6 +172,7 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
   const [uniqueSequences, setUniqueSequences] = useState<UniqueSequenceBin[]>([]);
   const [amountConformanceData, setAmountConformanceData] = useState<any[]>([]);
   const [dimensionConfigs, setDimensionConfigs] = useState<Record<string, any>>({});
+  const [dimensionMeta, setDimensionMeta] = useState<Record<string, DimensionMeta>>(BUILTIN_DIMENSION_META);
 
 
 
@@ -180,6 +200,7 @@ export const FileProvider = ({ children }: { children: ReactNode }) => {
     setmatching_mode('');
     setAttributeConformance({});
     setDimensionConfigs({});
+    setDimensionMeta(BUILTIN_DIMENSION_META);
   };
 
   return (
@@ -219,6 +240,8 @@ selectedDeviations,
   setSelectedDimensions,
   dimensionConfigs,
   setDimensionConfigs,
+  dimensionMeta,
+  setDimensionMeta,
   resetAll,
 
       }}

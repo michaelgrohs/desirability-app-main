@@ -149,6 +149,45 @@ def get_all_activities_from_model(model_path):
         return sorted(set(activities))
 
 
+def get_activity_order_from_model(model_path):
+    """Extract activity names from a BPMN or PNML file in document order (as they appear in the file, deduplicated)."""
+    ext = os.path.splitext(model_path)[1].lower()
+    tree = ET.parse(model_path)
+    root = tree.getroot()
+    activities = []
+    seen = set()
+
+    if ext == '.pnml':
+        for trans in root.iter():
+            tag = trans.tag.split('}')[-1]
+            if tag != 'transition':
+                continue
+            # Skip invisible/tau transitions (ProM marks these via toolspecific activity="$invisible$")
+            toolspecific = trans.find('.//toolspecific')
+            if toolspecific is not None and toolspecific.attrib.get('activity') == '$invisible$':
+                continue
+            name_el = trans.find('.//name/text')
+            if name_el is None:
+                name_el = trans.find('.//text')
+            name = name_el.text if name_el is not None else None
+            if name and '$invisible$' not in name and name not in seen:
+                seen.add(name)
+                activities.append(name)
+    else:
+        task_tags = {
+            'task', 'userTask', 'serviceTask', 'scriptTask', 'manualTask',
+            'sendTask', 'receiveTask', 'businessRuleTask', 'callActivity', 'subProcess',
+        }
+        for el in root.iter():
+            tag = el.tag.split('}')[-1]
+            name = el.attrib.get('name')
+            if tag in task_tags and name and name not in seen:
+                seen.add(name)
+                activities.append(name)
+
+    return activities
+
+
 # Keep backward-compatible alias
 get_all_activities_from_bpmn = get_all_activities_from_model
 

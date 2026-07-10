@@ -11,12 +11,15 @@ import CriticalityResults from "./CriticalityResults";
 import ViolationGuidelines from "./ViolationGuidelines";
 import ActivityStats from "./ActivityStats";
 import Recommendations from "./Recommendations";
+import ModelReference from "./ModelReference";
 
 const App: React.FC = () => {
   return (
     <FileProvider>
       <Router>
         <Routes>
+          {/* Standalone — no wizard chrome, meant to be opened in its own tab */}
+          <Route path="/model-reference" element={<ModelReference />} />
           <Route element={<Layout />}>
             <Route path="/" element={<WelcomePage />} />
             <Route path="/view-bpmn" element={<ViewBPMN />} />
